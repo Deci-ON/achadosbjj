@@ -22,9 +22,10 @@ from achados.config import Settings, get_settings
 from achados.db import make_engine, make_session_factory
 from achados.logs import configure_logging
 from achados.models import Base, CollectRun, Product
-from achados.offers import assess_products
+from achados.messages import format_offer_message
+from achados.offers import assess_product, assess_products
 from achados.scheduler import CollectScheduler, LeaderLock
-from achados.scoring import IRRELEVANT, LEARNING, NO_OFFER, OFFER, ScoringConfig
+from achados.scoring import IRRELEVANT, LEARNING, NO_OFFER, OFFER, ScoringConfig, Verdict, normalize
 
 log = logging.getLogger("achados")
 
@@ -32,10 +33,12 @@ STATUSES = (OFFER, NO_OFFER, LEARNING, IRRELEVANT)
 
 
 class OfferOut(BaseModel):
+    id: int
     source: str
     external_id: str
     title: str
     url: str
+    affiliate_url: str | None
     image_url: str | None
     price: float
     original_price: float | None
@@ -47,11 +50,54 @@ class OfferOut(BaseModel):
     observed_days: float
     reasons: list[str]
     last_seen_at: datetime
+    message: str  # texto pronto para colar no WhatsApp
+
+
+class PricePointOut(BaseModel):
+    price: float
+    original_price: float | None  # "de" declarado pelo vendedor naquele momento (não é confiável)
+    collected_at: datetime
+
+
+class ProductDetailOut(OfferOut):
+    history: list[PricePointOut]
 
 
 class OffersResponse(BaseModel):
     counts: dict[str, int]
     items: list[OfferOut]
+
+
+def offer_out(product: Product, verdict: Verdict) -> OfferOut:
+    link = product.affiliate_url or product.url
+    return OfferOut(
+        id=product.id,
+        source=product.source,
+        external_id=product.external_id,
+        title=product.title,
+        url=product.url,
+        affiliate_url=product.affiliate_url,
+        image_url=product.image_url,
+        price=float(product.price),
+        original_price=float(product.original_price) if product.original_price else None,
+        status=verdict.status,
+        score=verdict.score,
+        reference_price=float(verdict.reference_price) if verdict.reference_price else None,
+        real_discount_pct=verdict.real_discount_pct,
+        claimed_discount_pct=verdict.claimed_discount_pct,
+        observed_days=verdict.observed_days,
+        reasons=verdict.reasons,
+        last_seen_at=product.last_seen_at,
+        message=format_offer_message(
+            title=product.title,
+            price=product.price,
+            link=link,
+            is_offer=verdict.is_offer,
+            reference_price=verdict.reference_price,
+            real_discount_pct=verdict.real_discount_pct,
+            window_days=ScoringConfig.window_days,
+        ),
+    )
 
 
 def create_app(
@@ -148,6 +194,7 @@ def create_app(
         source: str | None = Query(None, pattern="^(shopee|mercadolivre)$"),
         min_score: int = Query(0, ge=0, le=100),
         limit: int = Query(30, ge=1, le=200),
+        q: str | None = Query(None, max_length=80, description="palavras que o título deve conter"),
         max_age_days: float = Query(3.0, gt=0),
         min_drop: float = Query(ScoringConfig.min_drop_pct, ge=0, le=100),
         min_history: float = Query(ScoringConfig.min_history_days, ge=0),
@@ -159,31 +206,32 @@ def create_app(
                 max_age_days=max_age_days,
                 config=ScoringConfig(min_drop_pct=min_drop, min_history_days=min_history),
             )
+        words = normalize(q).split() if q else []
         counts = {s: 0 for s in STATUSES}
         items = []
         for product, verdict in verdicts:
+            title = normalize(product.title)
+            if words and not all(word in title for word in words):
+                continue  # a busca vale também para as contagens: elas descrevem o que o filtro mostra
             counts[verdict.status] += 1
             if verdict.status == status and verdict.score >= min_score and len(items) < limit:
-                items.append(
-                    OfferOut(
-                        source=product.source,
-                        external_id=product.external_id,
-                        title=product.title,
-                        url=product.url,
-                        image_url=product.image_url,
-                        price=float(product.price),
-                        original_price=float(product.original_price) if product.original_price else None,
-                        status=verdict.status,
-                        score=verdict.score,
-                        reference_price=float(verdict.reference_price) if verdict.reference_price else None,
-                        real_discount_pct=verdict.real_discount_pct,
-                        claimed_discount_pct=verdict.claimed_discount_pct,
-                        observed_days=verdict.observed_days,
-                        reasons=verdict.reasons,
-                        last_seen_at=product.last_seen_at,
-                    )
-                )
+                items.append(offer_out(product, verdict))
         return OffersResponse(counts=counts, items=items)
+
+    @app.get("/api/products/{product_id}", response_model=ProductDetailOut, dependencies=[Depends(require_admin)])
+    def product_detail(product_id: int):
+        with sessions() as session:
+            found = assess_product(session, product_id)
+        if found is None:
+            raise HTTPException(404, "produto não encontrado")
+        product, verdict, history = found
+        return ProductDetailOut(
+            **offer_out(product, verdict).model_dump(),
+            history=[
+                PricePointOut(price=float(price), original_price=float(original) if original else None, collected_at=at)
+                for price, original, at in history
+            ],
+        )
 
     @app.post("/api/collect", status_code=202, dependencies=[Depends(require_admin)])
     async def collect():

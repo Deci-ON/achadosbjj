@@ -264,3 +264,92 @@ def test_post_collect_recusa_quando_ja_ha_coleta(sessions):
         response = client.post("/api/collect", headers=AUTH)
 
     assert response.status_code == 409 and "andamento" in response.json()["detail"]
+
+
+# --- painel: campos novos, detalhe do produto, busca ---------------------
+
+
+def test_offers_traz_id_link_e_mensagem_pronta_para_o_whatsapp(sessions, db):
+    seed_offers(db)
+
+    with TestClient(make_app(sessions)) as client:
+        items = client.get("/api/offers", params=OFFERS, headers=AUTH).json()["items"]
+
+    top = next(i for i in items if i["external_id"] == "product:grande")
+    assert isinstance(top["id"], int) and top["affiliate_url"] is None
+    assert top["message"] == (
+        "🔥 *Kimono Jiu Jitsu Atama*\n\n"
+        "💰 *R$ 250,00*\n"
+        "📉 50% abaixo do preço normal (R$ 500,00, mediana de 30 dias)\n\n"
+        "👉 https://exemplo/product:grande"
+    )
+
+
+def test_a_mensagem_nao_repete_o_de_do_vendedor(sessions, db):
+    # O vendedor diz "de R$ 900", mas o preço nunca passou de R$ 500: a mensagem não promete o desconto falso.
+    seed_offers(db)
+
+    with TestClient(make_app(sessions)) as client:
+        normal = client.get("/api/offers", params={**OFFERS, "status": "no_offer"}, headers=AUTH).json()["items"][0]
+
+    assert normal["external_id"] == "product:normal" and normal["claimed_discount_pct"] == 44
+    assert "900" not in normal["message"] and "abaixo" not in normal["message"] and "🔥" not in normal["message"]
+
+
+def test_a_mensagem_usa_o_link_de_afiliado_quando_existe(sessions, db):
+    seed_offers(db)
+    produto = db.scalars(select(Product).where(Product.external_id == "product:oferta")).one()
+    produto.affiliate_url = "https://mercadolivre.com/sec/abc123"
+    db.commit()
+
+    with TestClient(make_app(sessions)) as client:
+        item = next(
+            i for i in client.get("/api/offers", params=OFFERS, headers=AUTH).json()["items"] if i["external_id"] == "product:oferta"
+        )
+
+    assert item["affiliate_url"] == "https://mercadolivre.com/sec/abc123"
+    assert item["message"].endswith("👉 https://mercadolivre.com/sec/abc123") and "exemplo" not in item["message"]
+
+
+def test_busca_por_texto_filtra_a_lista_e_as_contagens(sessions, db):
+    seed_offers(db)
+
+    with TestClient(make_app(sessions)) as client:
+        body = client.get("/api/offers", params={**OFFERS, "q": "koral"}, headers=AUTH).json()
+        acento = client.get("/api/offers", params={**OFFERS, "q": "ATAMA kimono"}, headers=AUTH).json()
+        nenhum = client.get("/api/offers", params={**OFFERS, "q": "inexistente"}, headers=AUTH).json()
+
+    assert [i["external_id"] for i in body["items"]] == ["product:oferta"]
+    assert body["counts"] == {"offer": 1, "no_offer": 0, "learning": 0, "irrelevant": 0}
+    assert [i["external_id"] for i in acento["items"]] == ["product:grande"]  # todas as palavras, qualquer ordem
+    assert nenhum["items"] == [] and sum(nenhum["counts"].values()) == 0
+
+
+def test_detalhe_do_produto_com_historico_de_preco_em_ordem(sessions, db):
+    seed_offers(db)
+    produto = db.scalars(select(Product).where(Product.external_id == "product:oferta")).one()
+
+    with TestClient(make_app(sessions)) as client:
+        body = client.get(f"/api/products/{produto.id}", headers=AUTH).json()
+
+    assert body["id"] == produto.id and body["status"] == "offer" and body["real_discount_pct"] == 30
+    assert [p["price"] for p in body["history"]] == [500.0, 350.0]
+    assert [p["collected_at"] for p in body["history"]] == sorted(p["collected_at"] for p in body["history"])
+    assert body["message"].startswith("🔥 *Kimono Jiu Jitsu Koral*")
+
+
+def test_detalhe_mostra_tambem_produto_nao_visto_recentemente(sessions, db):
+    seed_offers(db)  # last_seen_at fixo em 2026-10-23: velho para a lista de ofertas, mas o detalhe abre
+    produto = db.scalars(select(Product).where(Product.external_id == "product:judo")).one()
+
+    with TestClient(make_app(sessions)) as client:
+        body = client.get(f"/api/products/{produto.id}", headers=AUTH).json()
+
+    assert body["status"] == "irrelevant" and body["reasons"]
+
+
+def test_detalhe_404_e_exige_token(sessions):
+    with TestClient(make_app(sessions)) as client:
+        assert client.get("/api/products/999999", headers=AUTH).status_code == 404
+        assert client.get("/api/products/1").status_code == 401
+        assert client.get("/api/products/abc", headers=AUTH).status_code == 422

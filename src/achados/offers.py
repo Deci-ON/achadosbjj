@@ -1,5 +1,6 @@
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -59,3 +60,36 @@ def assess_products(
         for product in products
     ]
     return sorted(verdicts, key=lambda pv: (-pv[1].score, pv[0].title))
+
+
+def assess_product(
+    session: Session,
+    product_id: int,
+    *,
+    rules: NicheRules | None = BJJ_RULES,
+    config: ScoringConfig = ScoringConfig(),
+) -> tuple[Product, Verdict, list[tuple[Decimal, Decimal | None, datetime]]] | None:
+    """Um produto só, com o histórico de preço (preço, "de" declarado, data) em ordem.
+
+    Diferente de assess_products, não exige que o produto tenha sido visto recentemente: a página de
+    detalhe também serve para ver o que parou de aparecer.
+    """
+    product = session.get(Product, product_id)
+    if product is None:
+        return None
+    rows = session.execute(
+        select(PriceSnapshot.price, PriceSnapshot.original_price, PriceSnapshot.collected_at)
+        .where(PriceSnapshot.product_id == product_id)
+        .order_by(PriceSnapshot.collected_at)
+    ).all()
+    history = [(price, original, _aware(at)) for price, original, at in rows]
+    verdict = assess(
+        [PricePoint(price, at) for price, _, at in history],
+        _aware(product.last_seen_at),
+        product.original_price,
+        title=product.title,
+        domain_id=(product.raw or {}).get("domain_id"),
+        rules=rules,
+        config=config,
+    )
+    return product, verdict, history
