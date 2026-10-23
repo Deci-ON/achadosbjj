@@ -4,17 +4,27 @@ Coleta de ofertas (Shopee e Mercado Livre) para canais de achadinhos. Esta fase 
 
 ## Como rodar
 
+Com Docker (recomendado; o banco fica só na rede interna do compose, sem porta no host):
+
+```bash
+cp .env.example .env                 # ML_CLIENT_ID / ML_CLIENT_SECRET; SHOPEE_* quando tiver
+docker compose up -d db
+docker compose run --rm app check-ml                 # o ML aceita este IP/credencial? (2s, não grava)
+docker compose run --rm app init-db                  # a 1ª vez faz o build da imagem
+
+docker compose run --rm app collect mercadolivre --preset bjj          # kimonos e faixas (catálogo do ML)
+docker compose run --rm app collect shopee -k "kimono bjj" --pages 2
+docker compose run --rm app offers                                      # o que está em oferta de verdade
+docker compose run --rm app stats
+docker compose exec db psql -U achados -c "select title, price from products order by last_seen_at desc limit 10"
+```
+
+Sem Docker, com um Postgres seu (aponte `DATABASE_URL` no `.env`):
+
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-cp .env.example .env            # preencha SHOPEE_APP_ID / SHOPEE_SECRET
-docker compose up -d db         # Postgres 16 em 127.0.0.1:5432
-.venv/bin/achados init-db
-
-.venv/bin/achados collect shopee -k "fone bluetooth" -k "air fryer" --pages 3
-.venv/bin/achados collect mercadolivre --preset bjj          # kimonos e faixas (catálogo do ML)
-.venv/bin/achados collect mercadolivre -c MLB1051 --per-category 10
-.venv/bin/achados offers                                      # o que está em oferta de verdade
-.venv/bin/achados stats
+.venv/bin/achados check-ml && .venv/bin/achados init-db
+.venv/bin/achados collect mercadolivre --preset bjj
 ```
 
 Testes (precisam de um Postgres com o banco `achados_test`; sem ele os testes de storage são pulados):
@@ -28,12 +38,12 @@ Testes (precisam de um Postgres com o banco `achados_test`; sem ele os testes de
 O `docker-compose.yml` tem o banco (`db`) e a CLI (`app`, no profile `tools`, que o `up -d` não sobe). O projeto se chama `achadosbjj`, então rede e volume não se misturam com outros compose do servidor.
 
 ```bash
-# 1. Enviar o código (o repositório não tem remoto): da sua máquina, na raiz do projeto
-git archive --format=tar HEAD | ssh USUARIO@VPS "mkdir -p /opt/achadosbjj && tar -x -C /opt/achadosbjj"
+# 1. Código na VPS: git clone https://github.com/Deci-ON/achadosbjj.git /opt/achadosbjj (depois, git pull)
+#    Lembre de dar `git push` da sua máquina antes do pull.
 
 # 2. Na VPS: criar o .env (edite no servidor; não passe o secret por chat)
 cd /opt/achadosbjj && cp .env.example .env && nano .env
-#    ML_CLIENT_ID, ML_CLIENT_SECRET, POSTGRES_PASSWORD, ACHADOS_DB_PORT=5433
+#    ML_CLIENT_ID, ML_CLIENT_SECRET, POSTGRES_PASSWORD (descomente a linha)
 
 # 3. Banco, e o teste que importa primeiro: o ML aceita o IP deste servidor?
 docker compose up -d db

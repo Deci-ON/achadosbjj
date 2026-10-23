@@ -8,9 +8,9 @@ services:
       POSTGRES_USER: achados
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-achados}
       POSTGRES_DB: achados
-    ports:
-      # Em servidor que já tem outro Postgres na 5432, defina ACHADOS_DB_PORT=5433 no .env.
-      - "127.0.0.1:${ACHADOS_DB_PORT:-5432}:5432"
+    # Sem `ports:` de propósito: o banco só é acessível pela rede interna do compose, então não
+    # conflita com outro Postgres do servidor (ex.: o do tibiascope). Para inspecionar:
+    #   docker compose exec db psql -U achados
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
