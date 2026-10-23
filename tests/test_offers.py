@@ -2,31 +2,12 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.orm import Session
 
-from achados.models import Base, PriceSnapshot, Product
+from achados.models import PriceSnapshot, Product
 from achados.offers import assess_products
 from achados.scoring import IRRELEVANT, LEARNING, NO_OFFER, OFFER
 
 NOW = datetime(2026, 10, 23, 12, 0, tzinfo=timezone.utc)
-
-
-@compiles(JSONB, "sqlite")
-def _jsonb_as_json_on_sqlite(type_, compiler, **kw):
-    # Só para os testes: o esquema real usa JSONB do Postgres.
-    return "JSON"
-
-
-@pytest.fixture
-def db():
-    engine = create_engine("sqlite://")
-    Base.metadata.create_all(engine)
-    with Session(engine) as session:
-        yield session
-    engine.dispose()
 
 
 def add_product(db, external_id, title, changes, *, original=None, seen_days_ago=0.0, domain=None, source="mercadolivre"):

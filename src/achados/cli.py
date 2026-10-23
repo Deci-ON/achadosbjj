@@ -22,7 +22,7 @@ from achados.db import make_engine, make_session_factory
 from achados.models import Base, Product
 from achados.offers import assess_products
 from achados.scoring import BJJ_RULES, IRRELEVANT, LEARNING, NO_OFFER, OFFER, ScoringConfig
-from achados.storage import finish_run, save_offers, start_run
+from achados.runner import run_collection
 
 log = logging.getLogger("achados")
 
@@ -104,26 +104,8 @@ def run_collect(args: argparse.Namespace) -> int:
     except CollectorError as exc:
         log.error("%s", exc)
         return 2
-    sessions = make_session_factory(make_engine())
-
-    with sessions() as session:
-        run = start_run(session, collector.source)
-        session.commit()
-
-        offers, error = [], None
-        try:
-            for offer in collector.collect():
-                offers.append(offer)
-        except Exception as exc:  # o run precisa registrar a falha, qualquer que seja
-            error = f"{type(exc).__name__}: {exc}"
-            log.error("coleta falhou: %s", error)
-
-        # Grava o que veio antes da falha (ex.: páginas 1-2 de 3).
-        save_offers(session, run, offers)
-        finish_run(session, run, error=error)
-        session.commit()
-        log.info("%s: %d vistos, %d novos", collector.source, run.items_seen, run.items_new)
-        return 1 if error else 0
+    result = run_collection(make_session_factory(make_engine()), collector)
+    return 0 if result.ok else 1
 
 
 def run_check_ml(api: MercadoLivreAPI | None = None) -> int:

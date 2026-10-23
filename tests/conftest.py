@@ -2,9 +2,12 @@ import os
 from pathlib import Path
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from achados.db import make_engine
 from achados.models import Base
@@ -31,3 +34,29 @@ def session():
     with Session(engine) as s:
         yield s
     engine.dispose()
+
+
+@compiles(JSONB, "sqlite")
+def _jsonb_as_json_on_sqlite(type_, compiler, **kw):
+    # Só para os testes: o esquema real usa JSONB do Postgres.
+    return "JSON"
+
+
+@pytest.fixture
+def sqlite_engine():
+    """SQLite em memória, uma única conexão compartilhada (serve a threads e a várias sessões)."""
+    engine = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture
+def sessions(sqlite_engine):
+    return sessionmaker(sqlite_engine, expire_on_commit=False)
+
+
+@pytest.fixture
+def db(sessions):
+    with sessions() as s:
+        yield s
