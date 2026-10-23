@@ -23,6 +23,36 @@ Testes (precisam de um Postgres com o banco `achados_test`; sem ele os testes de
 .venv/bin/python -m pytest
 ```
 
+## Rodar em um servidor com Docker
+
+O `docker-compose.yml` tem o banco (`db`) e a CLI (`app`, no profile `tools`, que o `up -d` não sobe). O projeto se chama `achadosbjj`, então rede e volume não se misturam com outros compose do servidor.
+
+```bash
+# 1. Enviar o código (o repositório não tem remoto): da sua máquina, na raiz do projeto
+git archive --format=tar HEAD | ssh USUARIO@VPS "mkdir -p /opt/achadosbjj && tar -x -C /opt/achadosbjj"
+
+# 2. Na VPS: criar o .env (edite no servidor; não passe o secret por chat)
+cd /opt/achadosbjj && cp .env.example .env && nano .env
+#    ML_CLIENT_ID, ML_CLIENT_SECRET, POSTGRES_PASSWORD, ACHADOS_DB_PORT=5433
+
+# 3. Banco, e o teste que importa primeiro: o ML aceita o IP deste servidor?
+docker compose up -d db
+docker compose run --rm app check-ml          # 2s; "BLOQUEADO" = IP recusado, precisa de proxy
+
+# 4. Só se o passo 3 deu "ok"
+docker compose run --rm app init-db
+docker compose run --rm app collect mercadolivre --preset bjj     # ~7 min
+docker compose run --rm app stats
+```
+
+Agendar a cada 6 horas (`-T` é necessário no cron, que não tem terminal; `nice` para não competir com outros serviços do servidor):
+
+```cron
+0 */6 * * * cd /opt/achadosbjj && nice docker compose run --rm -T app collect mercadolivre --preset bjj >> /var/log/achadosbjj.log 2>&1
+```
+
+Depois de ~7 dias de coletas, `docker compose run --rm app offers` passa a listar ofertas de verdade. `check-ml` também serve em qualquer ambiente para validar credenciais.
+
 ## Modelo de dados
 
 - `products`: um registro por `(source, external_id)`, com o estado atual da oferta e o JSON bruto da loja.

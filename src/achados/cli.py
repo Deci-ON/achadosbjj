@@ -6,13 +6,14 @@ from collections import Counter
 import httpx
 from sqlalchemy import func, select
 
-from achados.collectors.base import Collector, CollectorError
+from achados.collectors.base import BlockedError, Collector, CollectorError
 from achados.collectors.mercadolivre import OFFERS_URL, MercadoLivreCollector, make_http_client
 from achados.collectors.mercadolivre_api import (
     BJJ_CATEGORIES,
     BJJ_DOMAINS,
     BJJ_KEYWORDS,
     MercadoLivreAPI,
+    MercadoLivreAPIError,
     MercadoLivreApiCollector,
 )
 from achados.collectors.shopee import SORT_SALES, ShopeeClient, ShopeeCollector
@@ -32,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("init-db", help="cria as tabelas")
     sub.add_parser("stats", help="resumo do que já foi coletado")
+    sub.add_parser("check-ml", help="testa em 2s se a API do Mercado Livre responde deste IP, sem gravar nada")
 
     offers = sub.add_parser("offers", help="lista o que está em oferta de verdade, pelo histórico de preços")
     offers.add_argument("--source", choices=["shopee", "mercadolivre"])
@@ -124,6 +126,39 @@ def run_collect(args: argparse.Namespace) -> int:
         return 1 if error else 0
 
 
+def run_check_ml(api: MercadoLivreAPI | None = None) -> int:
+    """Chamadas mínimas aos endpoints que a coleta usa. Serve para validar credenciais e o IP do servidor."""
+    try:
+        if api is None:
+            settings = get_settings()
+            http = httpx.Client(timeout=settings.request_timeout, proxy=settings.ml_proxy_url)
+            api = MercadoLivreAPI(settings.ml_client_id, settings.ml_client_secret, http=http)
+        steps = [
+            ("token + destaques da categoria Kimonos", "/highlights/MLB/category/MLB47731", None),
+            (
+                "busca no catálogo",
+                "/products/search",
+                {"status": "active", "site_id": "MLB", "q": "kimono jiu jitsu", "limit": 1},
+            ),
+        ]
+        for label, path, params in steps:
+            body = api.get(path, params)
+            if not body:
+                print(f"FALHA  {label}: resposta vazia ou 404")
+                return 1
+            print(f"ok     {label}")
+        return 0
+    except BlockedError as exc:
+        print(f"BLOQUEADO  {exc}")
+        return 1
+    except MercadoLivreAPIError as exc:
+        print(f"ERRO  {exc}")
+        return 2
+    except httpx.HTTPError as exc:
+        print(f"ERRO DE REDE  {type(exc).__name__}: {exc}")
+        return 1
+
+
 def run_stats() -> int:
     sessions = make_session_factory(make_engine())
     with sessions() as session:
@@ -171,6 +206,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "stats":
         return run_stats()
+    if args.command == "check-ml":
+        return run_check_ml()
     if args.command == "offers":
         return run_offers(args)
     return run_collect(args)

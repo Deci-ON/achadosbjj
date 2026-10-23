@@ -1,15 +1,36 @@
+name: achadosbjj
+
 services:
   db:
     image: postgres:16
     restart: unless-stopped
     environment:
       POSTGRES_USER: achados
-      POSTGRES_PASSWORD: achados
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-achados}
       POSTGRES_DB: achados
     ports:
-      - "127.0.0.1:5432:5432"
+      # Em servidor que já tem outro Postgres na 5432, defina ACHADOS_DB_PORT=5433 no .env.
+      - "127.0.0.1:${ACHADOS_DB_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U achados -d achados"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Uso: docker compose run --rm app collect mercadolivre --preset bjj
+  # Fica em um profile para o `up -d` subir só o banco.
+  app:
+    build: .
+    profiles: ["tools"]
+    env_file: .env
+    environment:
+      # Dentro da rede do compose o banco é o serviço `db`, não localhost.
+      DATABASE_URL: postgresql+psycopg://achados:${POSTGRES_PASSWORD:-achados}@db:5432/achados
+    depends_on:
+      db:
+        condition: service_healthy
 
 volumes:
   pgdata:
