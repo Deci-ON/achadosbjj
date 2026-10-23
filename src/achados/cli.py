@@ -12,6 +12,8 @@ from achados.collectors.mercadolivre_api import (
     BJJ_CATEGORIES,
     BJJ_DOMAINS,
     BJJ_KEYWORDS,
+    BJJ_TREND_LIMIT,
+    SEARCH_MAX_PAGES,
     MercadoLivreAPI,
     MercadoLivreAPIError,
     MercadoLivreApiCollector,
@@ -62,7 +64,8 @@ def build_parser() -> argparse.ArgumentParser:
     ml.add_argument("-k", "--keyword", action="append", help="busca no catálogo por palavra-chave (repetível)")
     ml.add_argument("--domain", action="append", help="só produtos deste domain_id nas buscas (repetível)")
     ml.add_argument("--preset", choices=["bjj"], help="bjj: categorias, palavras-chave e domínios de jiu-jitsu")
-    ml.add_argument("--search-pages", type=int, default=2, help="páginas de 50 resultados por palavra-chave")
+    ml.add_argument("--search-pages", type=int, default=SEARCH_MAX_PAGES, help="páginas de 50 resultados por palavra-chave (o ML limita a 3)")
+    ml.add_argument("--no-trends", action="store_true", help="com --preset: não descobre palavras-chave em /trends")
     ml.add_argument("--per-category", type=int, default=20, help="produtos por categoria (máx. 20)")
     ml.add_argument("--min-discount", type=int, default=0, help="só grava ofertas com este desconto mínimo (%%)")
 
@@ -89,6 +92,8 @@ def _make_collector(args: argparse.Namespace) -> Collector:
         return MercadoLivreApiCollector(
             api,
             probe_cache=DbProbeCache(make_session_factory(make_engine())),
+            trend_categories=BJJ_CATEGORIES if args.preset == "bjj" and not args.no_trends else None,
+            trend_limit=BJJ_TREND_LIMIT,
             categories=categories,
             keywords=keywords,
             domains=domains,

@@ -33,20 +33,37 @@ DEFAULT_CATEGORIES = {
 # caem em categorias genéricas (MLB-SPORT_T_SHIRTS, MLB-SHORTS), sem produtos de catálogo úteis.
 BJJ_CATEGORIES = ["MLB47731", "MLB277803"]  # Kimonos; Faixas
 BJJ_DOMAINS = ("MLB-MARTIAL_ARTS_UNIFORMS", "MLB-MARTIAL_ARTS_BELTS")
+# Lista fixa: as de maior rendimento num experimento com ~35 palavras (produtos novos com oferta por palavra:
+# kimono pretorian 56, faixa jiu jitsu preta 52, kimono torah 43, reforçado 38, venum 27, shiroi 26...). Fica
+# de fora "kimono judo" (traz judô, que o filtro de título descarta) e luva/protetor bucal (MMA, não BJJ).
+# As marcas e variações que mudam com o tempo vêm de /trends (ver BJJ_TREND_LIMIT).
 BJJ_KEYWORDS = [
     "kimono jiu jitsu",
     "kimono bjj",
     "kimono trancado",
-    "kimono judo",
+    "kimono reforçado jiu jitsu",
     "kimono infantil jiu jitsu",
-    "faixa jiu jitsu",
+    "kimono pretorian",
+    "kimono torah",
+    "kimono venum",
+    "kimono shiroi",
     "kimono koral",
     "kimono atama",
     "kimono keiko",
-    "kimono shiroi",
+    "kimono hayabusa",
+    "kimono dragao",
+    "kimono naja",
+    "faixa jiu jitsu",
+    "faixa jiu jitsu preta",
+    "faixa jiu jitsu azul",
+    "faixa jiu jitsu roxa",
+    "faixa jiu jitsu marrom",
+    "faixa jiu jitsu infantil",
 ]
+BJJ_TREND_LIMIT = 30  # palavras novas por coleta vindas de /trends
 
 SEARCH_PAGE_SIZE = 50
+SEARCH_MAX_PAGES = 3  # o ML aceita offset + limit <= 150: offsets 0, 50 e 100
 
 # Filtro das palavras-chave de /trends (o que as pessoas mais buscam na categoria). A lista vem com
 # marcas úteis (kingz, hayabusa, gracie barra...) e muito ruído (outros esportes, acessórios, lixo).
@@ -170,7 +187,7 @@ class MercadoLivreApiCollector:
         keywords: list[str] | None = None,
         domains: tuple[str, ...] | None = None,
         per_category: int = 20,
-        search_pages: int = 2,
+        search_pages: int = SEARCH_MAX_PAGES,
         min_discount: int = 0,
         delay: float = 0.2,
         sleep: Callable[[float], None] = time.sleep,
@@ -386,4 +403,6 @@ def build_collector(settings, preset: str, sessions=None) -> MercadoLivreApiColl
         keywords=BJJ_KEYWORDS,
         domains=BJJ_DOMAINS,
         probe_cache=DbProbeCache(sessions) if sessions is not None else None,
+        trend_categories=BJJ_CATEGORIES,
+        trend_limit=BJJ_TREND_LIMIT,
     )
