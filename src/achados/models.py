@@ -81,3 +81,15 @@ class EmptyCatalogProduct(Base):
 
     product_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SentOffer(Base):
+    """Uma oferta que foi mandada (colada no WhatsApp). Serve para não repetir a mesma oferta à toa."""
+
+    __tablename__ = "sent_offers"
+    __table_args__ = (Index("ix_sent_offers_product_sent", "product_id", "sent_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"))
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    price: Mapped[Decimal] = mapped_column(Numeric(12, 2))  # o preço no momento do envio

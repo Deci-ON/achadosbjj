@@ -224,7 +224,12 @@ def test_offers_sem_produtos_recentes(sessions, db):
     with TestClient(make_app(sessions)) as client:
         body = client.get("/api/offers", params={"max_age_days": 0.001}, headers=AUTH).json()
 
-    assert body == {"counts": {"offer": 0, "no_offer": 0, "learning": 0, "irrelevant": 0}, "items": []}
+    assert body == {
+        "counts": {"offer": 0, "no_offer": 0, "learning": 0, "irrelevant": 0},
+        "ready": 0,
+        "pending_link": 0,
+        "items": [],
+    }
 
 
 # --- disparo manual -------------------------------------------------------
@@ -432,3 +437,154 @@ def test_sem_link_guardado_o_produto_fica_sem_link_de_afiliado(sessions, db):
 
     assert body["affiliate_url"] is None and body["affiliate_origin"] is None
     assert body["message"].endswith("👉 https://exemplo/product:oferta")  # cai no link normal do produto
+
+
+# --- do "virou oferta" ao "pronta para enviar" -----------------------------
+
+
+def pid_of(db, external_id):
+    return product_id(db, external_id)
+
+
+def get_offers(client, **params):
+    return client.get("/api/offers", params={**OFFERS, **params}, headers=AUTH).json()
+
+
+def test_oferta_sem_link_entra_na_fila_e_nao_esta_pronta(sessions, db):
+    seed_offers(db)  # duas ofertas (oferta, grande), nenhuma com link
+
+    with TestClient(make_app(sessions)) as client:
+        body = get_offers(client)
+        pending = client.get("/api/affiliate/pending", headers=AUTH).json()
+        ready = get_offers(client, ready="true")
+
+    assert body["pending_link"] == 2 and body["ready"] == 0
+    assert all(i["needs_link"] and not i["ready"] for i in body["items"])
+    assert ready["items"] == []
+    assert pending["total"] == 2
+    assert [i["title"] for i in pending["items"]] == ["Kimono Jiu Jitsu Atama", "Kimono Jiu Jitsu Koral"]  # melhor score primeiro
+    assert pending["items"][0]["url"] == "https://exemplo/product:grande"  # a URL que vai ao gerador
+
+
+def test_so_oferta_do_ml_entra_na_fila(sessions, db):
+    seed_offers(db)
+    db.scalars(select(Product).where(Product.external_id == "product:grande")).one().source = "shopee"
+    db.commit()
+
+    with TestClient(make_app(sessions)) as client:
+        pending = client.get("/api/affiliate/pending", headers=AUTH).json()
+
+    assert [i["title"] for i in pending["items"]] == ["Kimono Jiu Jitsu Koral"]  # a Shopee traz o link pela API
+
+
+def test_salvar_links_em_lote_pareia_pela_ordem_e_deixa_as_ofertas_prontas(sessions, db):
+    seed_offers(db)
+    grande, oferta = pid_of(db, "product:grande"), pid_of(db, "product:oferta")
+
+    with TestClient(make_app(sessions)) as client:
+        pending = client.get("/api/affiliate/pending", headers=AUTH).json()["items"]
+        links = ["https://meli.la/AAA", "https://meli.la/BBB"]  # o que o gerador devolve, na ordem das URLs coladas
+        saved = client.post(
+            "/api/affiliate/links",
+            json={"items": [{"id": i["id"], "url": link} for i, link in zip(pending, links)]},
+            headers=AUTH,
+        )
+        ready = get_offers(client, ready="true")
+
+    assert saved.status_code == 200 and saved.json() == {"saved": 2}
+    assert [i["id"] for i in ready["items"]] == [grande, oferta]
+    assert [i["affiliate_url"] for i in ready["items"]] == links
+    assert all(i["ready"] and not i["needs_link"] for i in ready["items"])
+    assert ready["items"][0]["message"].endswith("👉 https://meli.la/AAA")
+    assert ready["ready"] == 2 and ready["pending_link"] == 0
+
+
+def test_salvar_em_lote_recusa_tudo_se_algo_estiver_errado(sessions, db):
+    seed_offers(db)
+    a, b = pid_of(db, "product:grande"), pid_of(db, "product:oferta")
+
+    with TestClient(make_app(sessions)) as client:
+        golpe = client.post("/api/affiliate/links", json={"items": [{"id": a, "url": "https://meli.la/OK"}, {"id": b, "url": "https://golpe.com/x"}]}, headers=AUTH)
+        repetido = client.post("/api/affiliate/links", json={"items": [{"id": a, "url": "https://meli.la/X"}, {"id": b, "url": "https://meli.la/X"}]}, headers=AUTH)
+        inexistente = client.post("/api/affiliate/links", json={"items": [{"id": 999999, "url": "https://meli.la/X"}]}, headers=AUTH)
+        vazio = client.post("/api/affiliate/links", json={"items": []}, headers=AUTH)
+        sem_token = client.post("/api/affiliate/links", json={"items": []})
+
+    assert golpe.status_code == 422 and "domínio" in golpe.json()["detail"]
+    assert repetido.status_code == 422 and "repetido" in repetido.json()["detail"]
+    assert inexistente.status_code == 404
+    assert vazio.status_code == 422 and sem_token.status_code == 401
+    db.expire_all()
+    assert db.scalars(select(Product.affiliate_url).where(Product.id.in_([a, b]))).all() == [None, None]  # nada foi salvo
+
+
+def test_marcar_enviada_tira_das_prontas_e_desfazer_devolve(sessions, db):
+    seed_offers(db)
+    oferta = pid_of(db, "product:oferta")
+    db.scalars(select(Product).where(Product.id == oferta)).one().affiliate_url = "https://meli.la/AAA"
+    db.commit()
+
+    with TestClient(make_app(sessions)) as client:
+        antes = get_offers(client, ready="true")
+        marcada = client.post(f"/api/products/{oferta}/sent", headers=AUTH)
+        depois = get_offers(client, ready="true")
+        na_lista = next(i for i in get_offers(client)["items"] if i["id"] == oferta)
+        desfeita = client.delete(f"/api/products/{oferta}/sent", headers=AUTH)
+        de_volta = get_offers(client, ready="true")
+
+    assert [i["id"] for i in antes["items"]] == [oferta]
+    assert marcada.status_code == 200 and marcada.json()["sent_at"] is not None and marcada.json()["ready"] is False
+    assert depois["items"] == [] and depois["ready"] == 0
+    assert na_lista["sent_at"] is not None and na_lista["ready"] is False  # continua na lista de ofertas, só não está "pronta"
+    assert desfeita.json()["sent_at"] is None and desfeita.json()["ready"] is True
+    assert [i["id"] for i in de_volta["items"]] == [oferta]
+
+
+def test_enviada_volta_se_o_preco_cair_mais_de_3_por_cento(sessions, db):
+    seed_offers(db)
+    oferta = pid_of(db, "product:oferta")  # preço atual 350
+    produto = db.scalars(select(Product).where(Product.id == oferta)).one()
+    produto.affiliate_url = "https://meli.la/AAA"
+    db.commit()
+
+    with TestClient(make_app(sessions)) as client:
+        client.post(f"/api/products/{oferta}/sent", headers=AUTH)
+        produto.price = Decimal("300")  # caiu bem mais de 3% desde o envio
+        db.commit()
+        volta = get_offers(client, ready="true")
+
+    assert [i["id"] for i in volta["items"]] == [oferta]
+
+
+def test_marcar_enviada_404_e_exige_token(sessions, db):
+    seed_offers(db)
+
+    with TestClient(make_app(sessions)) as client:
+        assert client.post("/api/products/999999/sent", headers=AUTH).status_code == 404
+        assert client.delete("/api/products/999999/sent", headers=AUTH).status_code == 404
+        assert client.post(f"/api/products/{pid_of(db, 'product:oferta')}/sent").status_code == 401
+        assert client.get("/api/affiliate/pending").status_code == 401
+
+
+def test_detalhe_traz_pronta_e_enviada(sessions, db):
+    seed_offers(db)
+    oferta = pid_of(db, "product:oferta")
+
+    with TestClient(make_app(sessions)) as client:
+        sem_link = client.get(f"/api/products/{oferta}", headers=AUTH).json()
+        put_link(client, oferta, LINK)
+        com_link = client.get(f"/api/products/{oferta}", headers=AUTH).json()
+
+    assert (sem_link["needs_link"], sem_link["ready"]) == (True, False)
+    assert (com_link["needs_link"], com_link["ready"]) == (False, True)
+
+
+def test_a_fila_respeita_o_limite_do_lote(sessions, db):
+    seed_offers(db)
+
+    with TestClient(make_app(sessions)) as client:
+        um = client.get("/api/affiliate/pending", params={"limit": 1}, headers=AUTH).json()
+        invalido = client.get("/api/affiliate/pending", params={"limit": 999}, headers=AUTH)
+
+    assert um["total"] == 2 and len(um["items"]) == 1  # total conta tudo, a lista respeita o limite
+    assert invalido.status_code == 422

@@ -29,6 +29,7 @@ from achados.messages import format_offer_message
 from achados.offers import assess_product, assess_products
 from achados.scheduler import CollectScheduler, LeaderLock
 from achados.scoring import IRRELEVANT, LEARNING, NO_OFFER, OFFER, ScoringConfig, Verdict, normalize
+from achados.workflow import MAX_BATCH, Sent, is_ready, needs_link, pair_links, recent_sends, record_send, undo_send
 
 log = logging.getLogger("achados")
 
@@ -55,6 +56,9 @@ class OfferOut(BaseModel):
     reasons: list[str]
     last_seen_at: datetime
     message: str  # texto pronto para colar no WhatsApp
+    ready: bool  # oferta com link de afiliado e ainda não enviada: pronta para mandar
+    needs_link: bool  # oferta do ML ainda sem link de afiliado: está na fila de links
+    sent_at: datetime | None  # último envio dentro da carência de 7 dias
 
 
 class PricePointOut(BaseModel):
@@ -73,10 +77,40 @@ class AffiliateLinkIn(BaseModel):
 
 class OffersResponse(BaseModel):
     counts: dict[str, int]
+    ready: int  # ofertas prontas para enviar (com o filtro de busca aplicado)
+    pending_link: int  # ofertas do ML aguardando link de afiliado
     items: list[OfferOut]
 
 
-def offer_out(product: Product, verdict: Verdict, affiliate_url: str | None = None, origin: str | None = None) -> OfferOut:
+class PendingItem(BaseModel):
+    id: int
+    title: str
+    url: str  # a URL a colar no gerador do ML
+    price: float
+    score: int
+
+
+class PendingResponse(BaseModel):
+    total: int
+    items: list[PendingItem]
+
+
+class BulkLinkItem(BaseModel):
+    id: int
+    url: str
+
+
+class BulkLinksIn(BaseModel):
+    items: list[BulkLinkItem]  # na ordem em que as URLs foram coladas no gerador
+
+
+def offer_out(
+    product: Product,
+    verdict: Verdict,
+    affiliate_url: str | None = None,
+    origin: str | None = None,
+    sent: Sent | None = None,
+) -> OfferOut:
     link = affiliate_url or product.url
     return OfferOut(
         id=product.id,
@@ -106,6 +140,9 @@ def offer_out(product: Product, verdict: Verdict, affiliate_url: str | None = No
             real_discount_pct=verdict.real_discount_pct,
             window_days=ScoringConfig.window_days,
         ),
+        ready=is_ready(product, verdict, sent),
+        needs_link=needs_link(product, verdict),
+        sent_at=sent.at if sent else None,
     )
 
 
@@ -135,9 +172,9 @@ def create_app(
 
     manual_tasks: set[asyncio.Task] = set()
 
-    def present(product: Product, verdict: Verdict) -> OfferOut:
+    def present(product: Product, verdict: Verdict, sent: Sent | None = None) -> OfferOut:
         link, origin = effective_link(product)
-        return offer_out(product, verdict, link, origin)
+        return offer_out(product, verdict, link, origin, sent)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -208,6 +245,7 @@ def create_app(
         min_score: int = Query(0, ge=0, le=100),
         limit: int = Query(30, ge=1, le=200),
         q: str | None = Query(None, max_length=80, description="palavras que o título deve conter"),
+        ready: bool = Query(False, description="só as prontas para enviar (ignora status)"),
         max_age_days: float = Query(3.0, gt=0),
         min_drop: float = Query(ScoringConfig.min_drop_pct, ge=0, le=100),
         min_history: float = Query(ScoringConfig.min_history_days, ge=0),
@@ -219,27 +257,35 @@ def create_app(
                 max_age_days=max_age_days,
                 config=ScoringConfig(min_drop_pct=min_drop, min_history_days=min_history),
             )
+            sends = recent_sends(session)
         words = normalize(q).split() if q else []
         counts = {s: 0 for s in STATUSES}
         items = []
+        ready_count = pending_count = 0
         for product, verdict in verdicts:
             title = normalize(product.title)
             if words and not all(word in title for word in words):
                 continue  # a busca vale também para as contagens: elas descrevem o que o filtro mostra
             counts[verdict.status] += 1
-            if verdict.status == status and verdict.score >= min_score and len(items) < limit:
-                items.append(present(product, verdict))
-        return OffersResponse(counts=counts, items=items)
+            sent = sends.get(product.id)
+            is_rdy = is_ready(product, verdict, sent)
+            ready_count += is_rdy
+            pending_count += needs_link(product, verdict)
+            chosen = is_rdy if ready else verdict.status == status
+            if chosen and verdict.score >= min_score and len(items) < limit:
+                items.append(present(product, verdict, sent))
+        return OffersResponse(counts=counts, ready=ready_count, pending_link=pending_count, items=items)
 
     @app.get("/api/products/{product_id}", response_model=ProductDetailOut, dependencies=[Depends(require_admin)])
     def product_detail(product_id: int):
         with sessions() as session:
             found = assess_product(session, product_id)
+            sent = recent_sends(session).get(product_id)
         if found is None:
             raise HTTPException(404, "produto não encontrado")
         product, verdict, history = found
         return ProductDetailOut(
-            **present(product, verdict).model_dump(),
+            **present(product, verdict, sent).model_dump(),
             history=[
                 PricePointOut(price=float(price), original_price=float(original) if original else None, collected_at=at)
                 for price, original, at in history
@@ -258,6 +304,54 @@ def create_app(
             if product is None:
                 raise HTTPException(404, "produto não encontrado")
             product.affiliate_url = url
+            session.commit()
+        return product_detail(product_id)
+
+    @app.get("/api/affiliate/pending", response_model=PendingResponse, dependencies=[Depends(require_admin)])
+    def affiliate_pending(limit: int = Query(20, ge=1, le=MAX_BATCH)):
+        """Ofertas do ML sem link de afiliado, da melhor para a pior: as URLs a colar no gerador do ML."""
+        with sessions() as session:
+            verdicts = assess_products(session)
+        pending = [(p, v) for p, v in verdicts if needs_link(p, v)]
+        return PendingResponse(
+            total=len(pending),
+            items=[
+                PendingItem(id=p.id, title=p.title, url=p.url, price=float(p.price), score=v.score)
+                for p, v in pending[:limit]
+            ],
+        )
+
+    @app.post("/api/affiliate/links", dependencies=[Depends(require_admin)])
+    def affiliate_links(body: BulkLinksIn):
+        """Guarda os links do gerador do ML pareados pela ordem. Tudo ou nada."""
+        try:
+            with sessions() as session:
+                saved = pair_links(session, [(item.id, item.url) for item in body.items])
+                session.commit()
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return {"saved": saved}
+
+    @app.post("/api/products/{product_id}/sent", response_model=ProductDetailOut, dependencies=[Depends(require_admin)])
+    def mark_sent(product_id: int):
+        """Marca a oferta como enviada: sai de "prontas" por 7 dias, a menos que o preço caia mais de 3%."""
+        with sessions() as session:
+            product = session.get(Product, product_id)
+            if product is None:
+                raise HTTPException(404, "produto não encontrado")
+            record_send(session, product)
+            session.commit()
+        return product_detail(product_id)
+
+    @app.delete("/api/products/{product_id}/sent", response_model=ProductDetailOut, dependencies=[Depends(require_admin)])
+    def unmark_sent(product_id: int):
+        """Desfaz o envio mais recente (marcou sem querer)."""
+        with sessions() as session:
+            if session.get(Product, product_id) is None:
+                raise HTTPException(404, "produto não encontrado")
+            undo_send(session, product_id)
             session.commit()
         return product_detail(product_id)
 
