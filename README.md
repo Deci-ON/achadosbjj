@@ -27,10 +27,28 @@ Escuta em `127.0.0.1:8001` do host. Tudo em `/api/*` exige `Authorization: Beare
 |---|---|
 | `GET /health` | público; confere o banco (usado pelo healthcheck do compose) |
 | `GET /api/status` | estado do agendador (líder, rodando, falhas seguidas, próximo horário), produtos por loja, últimas 5 coletas |
-| `GET /api/offers` | produtos pela pontuação por histórico: `status` (`offer` padrão, `no_offer`, `learning`, `irrelevant`), `min_score`, `limit`, `source`, `max_age_days`, `min_drop`, `min_history`; devolve também as contagens por situação |
+| `GET /api/offers` | produtos pela pontuação por histórico: `status` (`offer` padrão, `no_offer`, `learning`, `irrelevant`), `min_score`, `limit`, `source`, `q` (palavras do título), `max_age_days`, `min_drop`, `min_history`; cada item traz `id`, `affiliate_url` e `message`; devolve também as contagens por situação |
+| `GET /api/products/{id}` | um produto com veredito, motivos, mensagem para o WhatsApp e histórico de preço (abre também o que não foi visto recentemente) |
 | `POST /api/collect` | dispara uma coleta agora, em segundo plano (202). 409 se o agendador está desligado, se este worker não é o líder, ou se já há uma coleta |
 
 Configuração (`.env`): `COLLECT_ENABLED` (true), `COLLECT_INTERVAL_SECONDS` (21600), `COLLECT_PRESET` (bjj), `COLLECT_STARTUP_DELAY_SECONDS` (30). Falha de coleta repete em 15 min, 30 min... até o intervalo normal, e fica registrada em `collect_runs` (visível em `/api/status`).
+
+### Painel
+
+O mesmo contêiner serve um painel web (React + Vite + Tailwind, código em `frontend/`, compilado no `docker build`) em `http://127.0.0.1:8001/`. Entra-se colando o `ADMIN_TOKEN`.
+
+- **Painel:** estado da coleta, última coleta, produtos por loja, contagem por situação e "Coletar agora".
+- **Ofertas:** abas por situação (ofertas, aprendendo, sem oferta, fora do nicho), busca no título, score mínimo, e o botão **Copiar mensagem**: um texto pronto para colar no WhatsApp, com título, preço, quanto está abaixo do preço normal e o link. O "de R$ X" do vendedor **não** entra na mensagem (pode ser inflado); a comparação é com a mediana do nosso histórico.
+- **Produto:** gráfico do histórico de preço, os motivos do veredito e a mensagem.
+
+Como a porta só escuta em localhost, na VPS abra um túnel e use o navegador da sua máquina (em `localhost` o botão de copiar funciona; por `http://IP` o navegador bloquearia a área de transferência):
+
+```bash
+ssh -L 8001:127.0.0.1:8001 USUARIO@VPS
+# depois, no navegador: http://localhost:8001
+```
+
+Para mexer no front: `cd frontend && npm install && npm run dev` (porta 5173, com proxy para a API em 8001). `STATIC_DIR` aponta para a pasta compilada (a imagem já define `/app/static`); sem ele o serviço é só API.
 
 ### CLI (continua disponível)
 
