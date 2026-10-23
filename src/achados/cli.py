@@ -1,17 +1,26 @@
 import argparse
 import logging
 import sys
+from collections import Counter
 
 import httpx
 from sqlalchemy import func, select
 
 from achados.collectors.base import Collector, CollectorError
 from achados.collectors.mercadolivre import OFFERS_URL, MercadoLivreCollector, make_http_client
-from achados.collectors.mercadolivre_api import MercadoLivreAPI, MercadoLivreApiCollector
+from achados.collectors.mercadolivre_api import (
+    BJJ_CATEGORIES,
+    BJJ_DOMAINS,
+    BJJ_KEYWORDS,
+    MercadoLivreAPI,
+    MercadoLivreApiCollector,
+)
 from achados.collectors.shopee import SORT_SALES, ShopeeClient, ShopeeCollector
 from achados.config import get_settings
 from achados.db import make_engine, make_session_factory
 from achados.models import Base, Product
+from achados.offers import assess_products
+from achados.scoring import BJJ_RULES, IRRELEVANT, LEARNING, NO_OFFER, OFFER, ScoringConfig
 from achados.storage import finish_run, save_offers, start_run
 
 log = logging.getLogger("achados")
@@ -23,6 +32,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("init-db", help="cria as tabelas")
     sub.add_parser("stats", help="resumo do que já foi coletado")
+
+    offers = sub.add_parser("offers", help="lista o que está em oferta de verdade, pelo histórico de preços")
+    offers.add_argument("--source", choices=["shopee", "mercadolivre"])
+    offers.add_argument("--status", choices=[OFFER, NO_OFFER, LEARNING, IRRELEVANT], default=OFFER)
+    offers.add_argument("--limit", type=int, default=30)
+    offers.add_argument("--max-age-days", type=float, default=3.0, help="ignora produtos não vistos há mais tempo")
+    offers.add_argument("--min-drop", type=float, default=ScoringConfig.min_drop_pct, help="queda mínima (%%) sobre a mediana")
+    offers.add_argument(
+        "--min-history", type=float, default=ScoringConfig.min_history_days, help="dias de histórico antes de opinar"
+    )
+    offers.add_argument("--any-niche", action="store_true", help="não filtra por nicho (BJJ)")
 
     collect = sub.add_parser("collect", help="coleta ofertas de uma loja")
     stores = collect.add_subparsers(dest="store", required=True)
@@ -36,6 +56,10 @@ def build_parser() -> argparse.ArgumentParser:
     ml.add_argument(
         "-c", "--category", action="append", help="id de categoria, ex. MLB1051 (repetível); sem ela, as categorias padrão"
     )
+    ml.add_argument("-k", "--keyword", action="append", help="busca no catálogo por palavra-chave (repetível)")
+    ml.add_argument("--domain", action="append", help="só produtos deste domain_id nas buscas (repetível)")
+    ml.add_argument("--preset", choices=["bjj"], help="bjj: categorias, palavras-chave e domínios de jiu-jitsu")
+    ml.add_argument("--search-pages", type=int, default=2, help="páginas de 50 resultados por palavra-chave")
     ml.add_argument("--per-category", type=int, default=20, help="produtos por categoria (máx. 20)")
     ml.add_argument("--min-discount", type=int, default=0, help="só grava ofertas com este desconto mínimo (%%)")
 
@@ -54,8 +78,19 @@ def _make_collector(args: argparse.Namespace) -> Collector:
     if args.store == "mercadolivre":
         http = httpx.Client(timeout=settings.request_timeout, proxy=settings.ml_proxy_url)
         api = MercadoLivreAPI(settings.ml_client_id, settings.ml_client_secret, http=http)
+        categories, keywords, domains = args.category, args.keyword, tuple(args.domain or ()) or None
+        if args.preset == "bjj":
+            categories = categories or BJJ_CATEGORIES
+            keywords = keywords or BJJ_KEYWORDS
+            domains = domains or BJJ_DOMAINS
         return MercadoLivreApiCollector(
-            api, categories=args.category, per_category=args.per_category, min_discount=args.min_discount
+            api,
+            categories=categories,
+            keywords=keywords,
+            domains=domains,
+            per_category=args.per_category,
+            search_pages=args.search_pages,
+            min_discount=args.min_discount,
         )
     http = make_http_client(settings.ml_proxy_url, settings.request_timeout)
     return MercadoLivreCollector(http, listing_url=args.url, max_pages=args.pages)
@@ -102,6 +137,30 @@ def run_stats() -> int:
     return 0
 
 
+def run_offers(args: argparse.Namespace) -> int:
+    config = ScoringConfig(min_drop_pct=args.min_drop, min_history_days=args.min_history)
+    sessions = make_session_factory(make_engine())
+    with sessions() as session:
+        verdicts = assess_products(
+            session,
+            source=args.source,
+            max_age_days=args.max_age_days,
+            rules=None if args.any_niche else BJJ_RULES,
+            config=config,
+        )
+
+    counts = Counter(v.status for _, v in verdicts)
+    print("; ".join(f"{status}: {counts.get(status, 0)}" for status in (OFFER, NO_OFFER, LEARNING, IRRELEVANT)))
+    for product, verdict in [pv for pv in verdicts if pv[1].status == args.status][: args.limit]:
+        drop = f"-{verdict.real_discount_pct}%" if verdict.real_discount_pct else "  -"
+        claimed = f"{verdict.claimed_discount_pct}%" if verdict.claimed_discount_pct else "-"
+        print(f"[{verdict.score:3d}] R$ {product.price:>9} real {drop:>5} (vendedor diz {claimed:>4}) {product.title[:60]}")
+        print(f"      {product.url}")
+        for reason in verdict.reasons:
+            print(f"      - {reason}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = build_parser().parse_args(argv)
@@ -112,6 +171,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "stats":
         return run_stats()
+    if args.command == "offers":
+        return run_offers(args)
     return run_collect(args)
 
 

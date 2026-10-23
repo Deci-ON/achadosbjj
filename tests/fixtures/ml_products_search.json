@@ -1,0 +1,106 @@
+{
+ "keywords": "kimono jiu jitsu",
+ "paging": {
+  "total": 5936,
+  "limit": 50,
+  "offset": 0
+ },
+ "results": [
+  {
+   "id": "MLB79731026",
+   "domain_id": "MLB-MARTIAL_ARTS_UNIFORMS",
+   "name": "Kimono Jiu Jitsu Adulto Preto A4",
+   "pictures": [
+    {
+     "id": "658949-MLA118058637831_092026",
+     "url": "https://http2.mlstatic.com/D_NQ_NP_658949-MLA118058637831_092026-F.jpg",
+     "suggested_for_picker": [
+      "COLOR"
+     ],
+     "max_width": "307",
+     "max_height": "500"
+    }
+   ],
+   "status": "active"
+  },
+  {
+   "id": "MLB75364693",
+   "domain_id": "MLB-MARTIAL_ARTS_UNIFORMS",
+   "name": "Kimono Jiu Jitsu Adulto Preto A3",
+   "pictures": [
+    {
+     "id": "752709-MLA114383780549_072026",
+     "url": "https://http2.mlstatic.com/D_NQ_NP_752709-MLA114383780549_072026-F.jpg",
+     "suggested_for_picker": [
+      "COLOR"
+     ],
+     "max_width": "736",
+     "max_height": "1200"
+    }
+   ],
+   "status": "active"
+  },
+  {
+   "id": "MLB79731027",
+   "domain_id": "MLB-MARTIAL_ARTS_UNIFORMS",
+   "name": "Kimono Jiu Jitsu Adulto Preto A0",
+   "pictures": [
+    {
+     "id": "678491-MLA118058489907_092026",
+     "url": "https://http2.mlstatic.com/D_NQ_NP_678491-MLA118058489907_092026-F.jpg",
+     "suggested_for_picker": [
+      "COLOR"
+     ],
+     "max_width": "307",
+     "max_height": "500"
+    }
+   ],
+   "status": "active"
+  },
+  {
+   "id": "MLB75223701",
+   "domain_id": "MLB-MARTIAL_ARTS_UNIFORMS",
+   "name": "Kimono Jiu Jitsu Adulto Preto A1",
+   "pictures": [
+    {
+     "id": "913176-MLA113073949840_072026",
+     "url": "https://http2.mlstatic.com/D_NQ_NP_913176-MLA113073949840_072026-F.jpg",
+     "suggested_for_picker": [
+      "COLOR"
+     ],
+     "max_width": "736",
+     "max_height": "1200"
+    }
+   ],
+   "status": "active"
+  },
+  {
+   "id": "MLB60127635",
+   "domain_id": "MLB-MUGS",
+   "name": "Caneca Kimono Jiu-jitsu",
+   "pictures": [
+    {
+     "id": "884379-MLA99564195610_122025",
+     "url": "https://http2.mlstatic.com/D_NQ_NP_884379-MLA99564195610_122025-F.jpg",
+     "max_width": "1024",
+     "max_height": "1070"
+    }
+   ],
+   "status": "active"
+  },
+  {
+   "id": "MLB63085442",
+   "domain_id": "MLB-MARTIAL_ARTS_BELTS",
+   "name": "Faixa Jiu Jitsu Azul 3,10m 8 Costuras Kimonos Jiu-Jitsu",
+   "pictures": [
+    {
+     "id": "925354-MLA101087414591_122025",
+     "url": "https://http2.mlstatic.com/D_NQ_NP_925354-MLA101087414591_122025-F.jpg",
+     "max_width": "1161",
+     "max_height": "758"
+    }
+   ],
+   "status": "active"
+  }
+ ]
+}

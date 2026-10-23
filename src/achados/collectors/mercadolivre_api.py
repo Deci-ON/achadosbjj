@@ -24,6 +24,35 @@ DEFAULT_CATEGORIES = {
     "MLB1384": "Bebês",
 }
 
+# Preset de BJJ. Categorias e domínios vêm de /sites/MLB/domain_discovery/search; rash guard e bermuda
+# caem em categorias genéricas (MLB-SPORT_T_SHIRTS, MLB-SHORTS), sem produtos de catálogo úteis.
+BJJ_CATEGORIES = ["MLB47731", "MLB277803"]  # Kimonos; Faixas
+BJJ_DOMAINS = ("MLB-MARTIAL_ARTS_UNIFORMS", "MLB-MARTIAL_ARTS_BELTS")
+BJJ_KEYWORDS = [
+    "kimono jiu jitsu",
+    "kimono bjj",
+    "kimono trancado",
+    "kimono judo",
+    "kimono infantil jiu jitsu",
+    "faixa jiu jitsu",
+    "kimono koral",
+    "kimono atama",
+    "kimono keiko",
+    "kimono shiroi",
+]
+
+SEARCH_PAGE_SIZE = 50
+
+# Esperas (s) entre tentativas quando a API responde 429; o `Retry-After`, se vier, tem prioridade.
+RATE_LIMIT_BACKOFF = (3.0, 10.0, 30.0)
+
+
+def _retry_after(response: httpx.Response) -> float | None:
+    try:
+        return min(float(response.headers["Retry-After"]), 120.0)
+    except (KeyError, ValueError):
+        return None
+
 
 class MercadoLivreAPIError(CollectorError):
     pass
@@ -44,6 +73,7 @@ class MercadoLivreAPI:
         http: httpx.Client | None = None,
         base_url: str = API_URL,
         clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
     ):
         if not client_id or not client_secret:
             raise MercadoLivreAPIError("ML_CLIENT_ID e ML_CLIENT_SECRET são obrigatórios")
@@ -52,6 +82,7 @@ class MercadoLivreAPI:
         self._http = http or httpx.Client(timeout=20.0)
         self._base_url = base_url
         self._clock = clock
+        self._sleep = sleep
         self._token: str | None = None
         self._expires_at = 0.0
 
@@ -80,13 +111,21 @@ class MercadoLivreAPI:
         return self._token
 
     def get(self, path: str, params: dict | None = None) -> dict | list | None:
-        """GET autenticado. Devolve None para 404; 403/429 viram BlockedError."""
+        """GET autenticado. Devolve None para 404; 403 vira BlockedError, e 429 também depois de
+        esgotar as esperas (RATE_LIMIT_BACKOFF, ou o `Retry-After` do servidor)."""
         url = f"{self._base_url}{path}"
-        for attempt in (1, 2):
+        renewed = False
+        waits = iter(RATE_LIMIT_BACKOFF)
+        while True:
             response = self._http.get(url, params=params, headers={"Authorization": f"Bearer {self._bearer()}"})
-            if response.status_code == 401 and attempt == 1:
-                self._token = None
+            if response.status_code == 401 and not renewed:
+                renewed, self._token = True, None
                 continue
+            if response.status_code == 429:
+                wait = next(waits, None)
+                if wait is not None:
+                    self._sleep(_retry_after(response) or wait)
+                    continue
             break
         if response.status_code == 404:
             return None
@@ -97,7 +136,15 @@ class MercadoLivreAPI:
 
 
 class MercadoLivreApiCollector:
-    """Coleta os mais vendidos de cada categoria e, de cada produto, a melhor oferta."""
+    """Coleta produtos de catálogo e grava, de cada um, o menor preço do mercado.
+
+    O item acompanhado é o **produto de catálogo**, não o anúncio de um vendedor: quando o
+    vendedor mais barato muda, o histórico de preço do produto continua contínuo, e a queda
+    do menor preço é o sinal de oferta que `achados.scoring` procura.
+
+    Os produtos vêm de duas fontes, combináveis: os mais vendidos de `categories` e a busca
+    de catálogo por `keywords` (filtrada por `domains`, quando informados).
+    """
 
     source = "mercadolivre"
 
@@ -105,42 +152,77 @@ class MercadoLivreApiCollector:
         self,
         api: MercadoLivreAPI,
         categories: list[str] | None = None,
+        keywords: list[str] | None = None,
+        domains: tuple[str, ...] | None = None,
         per_category: int = 20,
+        search_pages: int = 2,
         min_discount: int = 0,
         delay: float = 0.2,
         sleep: Callable[[float], None] = time.sleep,
     ):
         self._api = api
-        self._categories = categories or list(DEFAULT_CATEGORIES)
+        self._categories = categories if categories is not None else ([] if keywords else list(DEFAULT_CATEGORIES))
+        self._keywords = keywords or []
+        self._domains = domains
         self._per_category = per_category
+        self._search_pages = search_pages
         self._min_discount = min_discount
         self._delay = delay
         self._sleep = sleep
 
     def collect(self) -> Iterator[Offer]:
         seen: set[str] = set()
+        for product in self._candidates(seen):
+            if product["id"] in seen:
+                continue
+            seen.add(product["id"])
+            offer = self._offer_for(product)
+            self._sleep(self._delay)
+            # `discount_pct` é o desconto declarado pelo vendedor; a oferta de verdade sai do histórico.
+            if offer and (offer.discount_pct or 0) >= self._min_discount:
+                yield offer
+
+    def _candidates(self, seen: set[str]) -> Iterator[dict]:
         for category in self._categories:
             for product_id in self._highlight_ids(category):
-                if product_id in seen:
+                if product_id in seen:  # já coletado por outra categoria: poupa a chamada de detalhe
                     continue
-                seen.add(product_id)
-                offer = self._offer_for(product_id)
-                self._sleep(self._delay)
-                if offer and (offer.discount_pct or 0) >= self._min_discount:
-                    yield offer
+                product = self._api.get(f"/products/{product_id}")
+                if product:
+                    yield product
+        for keyword in self._keywords:
+            yield from self._search(keyword)
 
     def _highlight_ids(self, category: str) -> list[str]:
         body = self._api.get(f"/highlights/MLB/category/{category}")
         if not body:
             return []
-        # `USER_PRODUCT` responde 403 em /user-products, então só os produtos de catálogo servem.
+        # `USER_PRODUCT` e `ITEM` não abrem com este token (403), então só os produtos de catálogo servem.
         ids = [entry["id"] for entry in body.get("content", []) if entry.get("type") == "PRODUCT"]
         return ids[: self._per_category]
 
-    def _offer_for(self, product_id: str) -> Offer | None:
-        product = self._api.get(f"/products/{product_id}")
-        items = self._api.get(f"/products/{product_id}/items")
-        if not product or not items:
+    def _search(self, keyword: str) -> Iterator[dict]:
+        for page in range(self._search_pages):
+            body = self._api.get(
+                "/products/search",
+                {
+                    "status": "active",
+                    "site_id": "MLB",
+                    "q": keyword,
+                    "limit": SEARCH_PAGE_SIZE,
+                    "offset": page * SEARCH_PAGE_SIZE,
+                },
+            )
+            results = (body or {}).get("results", [])
+            for product in results:
+                if self._domains is None or product.get("domain_id") in self._domains:
+                    yield product
+            if len(results) < SEARCH_PAGE_SIZE:
+                break
+
+    def _offer_for(self, product: dict) -> Offer | None:
+        items = self._api.get(f"/products/{product['id']}/items")
+        if not items:
             return None
         return best_offer(product, items.get("results", []))
 
@@ -159,27 +241,38 @@ def _discount(price: Decimal, original: Decimal | None) -> int | None:
 
 
 def best_offer(product: dict, results: list[dict]) -> Offer | None:
-    """Escolhe, entre as ofertas novas do produto, a de maior desconto (empate: menor preço)."""
+    """Resume o produto pela oferta nova de menor preço (empate: a primeira da lista).
+
+    `external_id` é o produto, não o anúncio: o anúncio mais barato pode trocar de vendedor
+    entre coletas sem quebrar o histórico. O link aponta para o anúncio mais barato do momento.
+    """
     candidates = []
     for result in results:
         price = _decimal(result.get("price"))
         if price is None or not result.get("item_id") or result.get("condition") != "new":
             continue
-        original = _decimal(result.get("original_price"))
-        candidates.append((-(_discount(price, original) or 0), price, result, original))
+        candidates.append((price, result))
     if not candidates:
         return None
 
-    _, price, result, original = min(candidates, key=lambda c: (c[0], c[1]))
+    price, result = min(candidates, key=lambda c: c[0])
+    original = _decimal(result.get("original_price"))
     pictures = product.get("pictures") or []
     return Offer(
         source="mercadolivre",
-        external_id=result["item_id"],
+        external_id=f"product:{product['id']}",
         title=product["name"],
         url=f"{SITE_URL}/p/{product['id']}?wid={result['item_id']}",
         image_url=pictures[0].get("url") if pictures else None,
         price=price,
         original_price=original if original and original > price else None,
         discount_pct=_discount(price, original),
-        raw={"product_id": product["id"], "domain_id": product.get("domain_id"), "offer": result},
+        raw={
+            "product_id": product["id"],
+            "domain_id": product.get("domain_id"),
+            "item_id": result["item_id"],
+            "seller_id": result.get("seller_id"),
+            "offers_count": len(candidates),
+            "offer": result,
+        },
     )

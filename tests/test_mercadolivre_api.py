@@ -5,7 +5,9 @@ import httpx
 import pytest
 
 from achados.collectors.base import BlockedError
+from achados.collectors import mercadolivre_api
 from achados.collectors.mercadolivre_api import (
+    BJJ_DOMAINS,
     MercadoLivreAPI,
     MercadoLivreApiCollector,
     MercadoLivreAPIError,
@@ -21,7 +23,10 @@ def fixture(name: str) -> dict:
 HIGHLIGHTS = fixture("ml_highlights_MLB1051.json")
 PRODUCT = fixture("ml_product.json")
 ITEMS = fixture("ml_product_items.json")
+SEARCH = fixture("ml_products_search.json")
 PRODUCT_ID = PRODUCT["id"]
+# Produtos do fixture de busca que têm ofertas no servidor falso: os 4 uniformes e a faixa.
+SEARCH_WITH_OFFERS = {p["id"] for p in SEARCH["results"] if p["domain_id"] != "MLB-MUGS"}
 
 
 class FakeML:
@@ -29,9 +34,11 @@ class FakeML:
 
     def __init__(self, token_ttl: int = 21600):
         self.calls: list[str] = []
+        self.search_params: list[dict] = []
         self.token_requests = 0
         self.token_ttl = token_ttl
         self.reject_next_with_401 = False
+        self.with_offers = {PRODUCT_ID}
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -44,10 +51,16 @@ class FakeML:
             return httpx.Response(401, json={"error": "invalid_token"})
         if path.startswith("/highlights/MLB/category/"):
             return httpx.Response(200, json=HIGHLIGHTS)
+        if path == "/products/search":
+            params = request.url.params
+            offset, limit = int(params["offset"]), int(params["limit"])
+            self.search_params.append(dict(params))
+            return httpx.Response(200, json={**SEARCH, "results": SEARCH["results"][offset : offset + limit]})
         if path == f"/products/{PRODUCT_ID}":
             return httpx.Response(200, json=PRODUCT)
-        if path == f"/products/{PRODUCT_ID}/items":
-            return httpx.Response(200, json=ITEMS)
+        if path.startswith("/products/") and path.endswith("/items"):
+            if path.split("/")[2] in self.with_offers:
+                return httpx.Response(200, json=ITEMS)
         return httpx.Response(404, json={"error": "not_found"})
 
 
@@ -110,23 +123,46 @@ def test_credenciais_recusadas():
         api.get("/products/x")
 
 
-def test_best_offer_escolhe_maior_desconto_e_normaliza():
+def test_best_offer_resume_o_produto_pelo_menor_preco():
     offer = best_offer(PRODUCT, ITEMS["results"])
 
-    # Duas ofertas têm original_price 1699: a de R$ 1.392 (18%) vence a de R$ 1.499 (11%).
+    # O item acompanhado é o produto de catálogo; o anúncio mais barato do momento só dá o link.
     assert offer.source == "mercadolivre"
-    assert offer.external_id == "MLB4594882681"
-    assert offer.price == Decimal("1392")
-    assert offer.original_price == Decimal("1699")
-    assert offer.discount_pct == 18
+    assert offer.external_id == f"product:{PRODUCT_ID}"
+    assert offer.price == Decimal("1289.9")
+    assert offer.original_price is None and offer.discount_pct is None
     assert offer.title == PRODUCT["name"]
-    assert offer.url == f"https://www.mercadolivre.com.br/p/{PRODUCT_ID}?wid=MLB4594882681"
+    assert offer.url == f"https://www.mercadolivre.com.br/p/{PRODUCT_ID}?wid=MLB4669565403"
     assert offer.image_url == PRODUCT["pictures"][0]["url"]
     assert offer.affiliate_url is None
-    assert offer.raw["offer"]["seller_id"] == 480263032
+    assert offer.raw["item_id"] == "MLB4669565403"
+    assert offer.raw["seller_id"] == 147445712
+    assert offer.raw["offers_count"] == len(ITEMS["results"])
+    assert offer.raw["domain_id"] == PRODUCT["domain_id"]
 
 
-def test_best_offer_sem_desconto_pega_o_menor_preco_e_ignora_usados():
+def test_o_anuncio_mais_barato_pode_trocar_sem_quebrar_a_identidade_do_produto():
+    new = lambda item_id, price: {"item_id": item_id, "price": price, "condition": "new"}
+    antes = best_offer(PRODUCT, [new("MLB1", 100), new("MLB2", 120)])
+    depois = best_offer(PRODUCT, [new("MLB1", 100), new("MLB2", 90)])
+
+    assert antes.external_id == depois.external_id  # mesmo histórico de preço
+    assert (antes.raw["item_id"], depois.raw["item_id"]) == ("MLB1", "MLB2")
+    assert depois.price == Decimal("90")
+
+
+def test_desconto_declarado_vem_do_anuncio_mais_barato():
+    results = [
+        {"item_id": "MLB1", "price": 70, "original_price": 100, "condition": "new"},
+        {"item_id": "MLB2", "price": 80, "original_price": 200, "condition": "new"},
+    ]
+
+    offer = best_offer(PRODUCT, results)
+
+    assert (offer.raw["item_id"], offer.discount_pct, offer.original_price) == ("MLB1", 30, Decimal("100"))
+
+
+def test_best_offer_ignora_usados_e_sem_preco():
     results = [
         {"item_id": "MLB1", "price": 100, "condition": "new"},
         {"item_id": "MLB2", "price": 80, "condition": "new"},
@@ -136,8 +172,7 @@ def test_best_offer_sem_desconto_pega_o_menor_preco_e_ignora_usados():
 
     offer = best_offer(PRODUCT, results)
 
-    assert offer.external_id == "MLB2"
-    assert offer.original_price is None and offer.discount_pct is None
+    assert offer.raw["item_id"] == "MLB2" and offer.raw["offers_count"] == 2
 
 
 def test_best_offer_sem_candidatas():
@@ -157,7 +192,7 @@ def test_collector_so_usa_produtos_de_catalogo_e_nao_repete():
     offers = list(collector.collect())
 
     # Só o primeiro PRODUCT do destaque tem fixture de produto; os demais dão 404 e são pulados.
-    assert [o.external_id for o in offers] == ["MLB4594882681"]
+    assert [o.external_id for o in offers] == [f"product:{PRODUCT_ID}"]
     assert not any("/user-products" in c for c in fake.calls)
     # A segunda categoria devolve os mesmos produtos: não são buscados de novo.
     assert fake.calls.count(f"/products/{PRODUCT_ID}") == 1
@@ -172,3 +207,121 @@ def test_collector_respeita_per_category_e_min_discount():
 
     strict = MercadoLivreApiCollector(make_api(FakeML()), categories=["MLB1051"], min_discount=50, sleep=lambda s: None)
     assert list(strict.collect()) == []
+
+
+# --- busca por palavra-chave ----------------------------------------------
+
+
+def search_collector(fake, **kwargs):
+    fake.with_offers = set(SEARCH_WITH_OFFERS)
+    return MercadoLivreApiCollector(make_api(fake), sleep=lambda s: None, **kwargs)
+
+
+def test_busca_filtra_por_dominio_do_nicho():
+    fake = FakeML()
+    collector = search_collector(fake, keywords=["kimono jiu jitsu"], domains=BJJ_DOMAINS)
+
+    offers = list(collector.collect())
+
+    # 4 uniformes + 1 faixa; a caneca (MLB-MUGS) nem chega a ter as ofertas consultadas.
+    assert len(offers) == 5
+    assert "/products/MLB60127635/items" not in fake.calls
+    assert {o.raw["domain_id"] for o in offers} == set(BJJ_DOMAINS)
+    assert fake.search_params[0]["q"] == "kimono jiu jitsu" and fake.search_params[0]["status"] == "active"
+
+
+def test_busca_sem_dominio_traz_tudo():
+    fake = FakeML()
+    fake.with_offers = {p["id"] for p in SEARCH["results"]}
+
+    offers = list(MercadoLivreApiCollector(make_api(fake), keywords=["kimono"], sleep=lambda s: None).collect())
+
+    assert len(offers) == len(SEARCH["results"])
+
+
+def test_busca_pagina_ate_vir_menos_que_o_tamanho_da_pagina(monkeypatch):
+    monkeypatch.setattr(mercadolivre_api, "SEARCH_PAGE_SIZE", 3)
+    fake = FakeML()
+
+    list(search_collector(fake, keywords=["kimono"], search_pages=5).collect())
+
+    # 6 resultados em páginas de 3: a 3ª página vem vazia e encerra a busca.
+    assert [p["offset"] for p in fake.search_params] == ["0", "3", "6"]
+
+
+def test_busca_respeita_search_pages(monkeypatch):
+    monkeypatch.setattr(mercadolivre_api, "SEARCH_PAGE_SIZE", 3)
+    fake = FakeML()
+
+    list(search_collector(fake, keywords=["kimono"], search_pages=1).collect())
+
+    assert len(fake.search_params) == 1
+
+
+def test_mesmo_produto_em_duas_palavras_chave_e_coletado_uma_vez():
+    fake = FakeML()
+    collector = search_collector(fake, keywords=["kimono jiu jitsu", "kimono bjj"], domains=BJJ_DOMAINS)
+
+    assert len(list(collector.collect())) == 5
+    assert fake.calls.count("/products/MLB79731026/items") == 1
+    assert len(fake.search_params) == 2
+
+
+def test_categorias_e_palavras_chave_se_combinam_sem_repetir():
+    fake = FakeML()
+    fake.with_offers = set(SEARCH_WITH_OFFERS) | {PRODUCT_ID}
+    collector = MercadoLivreApiCollector(
+        make_api(fake), categories=["MLB47731"], keywords=["kimono"], domains=BJJ_DOMAINS, sleep=lambda s: None
+    )
+
+    ids = [o.raw["product_id"] for o in collector.collect()]
+
+    assert PRODUCT_ID in ids and "MLB79731026" in ids and len(ids) == len(set(ids))
+
+
+def test_so_palavras_chave_nao_usa_as_categorias_padrao():
+    fake = FakeML()
+
+    list(search_collector(fake, keywords=["kimono"]).collect())
+
+    assert not any(c.startswith("/highlights") for c in fake.calls)
+
+
+# --- limite de taxa (429) -------------------------------------------------
+
+
+def rate_limited_api(responses: list[httpx.Response], sleeps: list[float]) -> MercadoLivreAPI:
+    queue = iter(responses)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/oauth/token":
+            return httpx.Response(200, json={"access_token": "t", "expires_in": 3600})
+        return next(queue)
+
+    return make_api(handler, sleep=sleeps.append)
+
+
+def test_429_espera_e_tenta_de_novo():
+    sleeps: list[float] = []
+    api = rate_limited_api([httpx.Response(429), httpx.Response(429), httpx.Response(200, json={"ok": True})], sleeps)
+
+    assert api.get("/products/search") == {"ok": True}
+    assert sleeps == [3.0, 10.0]
+
+
+def test_429_respeita_retry_after():
+    sleeps: list[float] = []
+    api = rate_limited_api([httpx.Response(429, headers={"Retry-After": "7"}), httpx.Response(200, json={})], sleeps)
+
+    api.get("/products/search")
+
+    assert sleeps == [7.0]
+
+
+def test_429_persistente_vira_blocked_depois_das_esperas():
+    sleeps: list[float] = []
+    api = rate_limited_api([httpx.Response(429)] * 4, sleeps)
+
+    with pytest.raises(BlockedError, match="429"):
+        api.get("/products/search")
+    assert sleeps == [3.0, 10.0, 30.0]
