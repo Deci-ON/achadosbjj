@@ -53,11 +53,15 @@ Para mexer no front: `cd frontend && npm install && npm run dev` (porta 5173, co
 
 ### Link de afiliado
 
-O Mercado Livre **não tem API de link de afiliado**: o painel do programa (Ferramentas, Gerador de link) gera os links à mão. A Shopee devolve o link pela própria API (`offerLink`, quando houver credenciais). Por isso:
+O Mercado Livre **não tem API de link de afiliado**, e o link que o gerador devolve não pode ser montado por modelo: o curto (`https://meli.la/<código>`) tem código opaco, e o completo (`/social/<perfil>?matt_word=<etiqueta>&matt_tool=<id>&forceInApp=true&ref=<token>`) leva o produto dentro de um `ref` gerado pelo servidor do ML (verificado gerando links na conta). A Shopee devolve o link pela própria API (`offerLink`, quando houver credenciais). Por isso o link do ML é **colado por produto**:
 
-- **Por produto, colado no painel web** (página do produto, card "Link de afiliado"): copie a URL do produto, gere o link curto no painel do ML, cole e salve. O link vai na mensagem do WhatsApp, e **a coleta não o apaga**. Só aceita `https` e os domínios do ML e da Shopee (`mercadolivre.com`, `mercadolivre.com.br`, `meli.la`, `shopee.com.br`, `shp.ee`, com subdomínios); qualquer outro é recusado, para não guardar lixo nem um link de golpe que iria parar numa mensagem. `PUT /api/products/{id}/affiliate-link` com `{"url": "..."}` faz o mesmo pela API; url vazia remove.
-- **Modelo opcional (`ML_AFFILIATE_TEMPLATE`)**, desligado por padrão: monta o link do ML sozinho a partir de `{url}`, `{product_url}`, `{product_id}` e `{item_id}`. O formato dos parâmetros do painel do ML (como `matt_tool` e `matt_word`) só aparece em guias de terceiros, não na documentação oficial, então só preencha depois de ver o que o seu painel gera. O link colado por produto vale mais que o modelo, e um modelo inválido derruba o serviço na subida.
-- Na lista de ofertas, cada oferta mostra "link de afiliado ✓", "link por modelo" ou, só nas ofertas, "sem link de afiliado". Sem link, a mensagem usa o link normal do produto (sem comissão).
+1. Na página do produto (card "Link de afiliado"), copie a URL do produto (ela leva o `?wid=` do anúncio mais barato do momento, que o ML respeita).
+2. Abra o gerador do ML (`https://www.mercadolivre.com.br/afiliados/linkbuilder`, "Gerador de produtos recomendados"), cole a URL, clique em Gerar e copie o **link curto**. O gerador aceita várias URLs, uma por linha, mas a ordem das saídas ainda não foi verificada, então o painel não faz colagem em lote.
+3. Cole no card e salve. O link vai na mensagem do WhatsApp e **a coleta não o apaga**.
+
+Só entram `https` e os domínios do ML e da Shopee (`mercadolivre.com`, `mercadolivre.com.br`, `meli.la`, `shopee.com.br`, `shp.ee`, com subdomínios); qualquer outro é recusado, para não guardar lixo nem um link de golpe que iria parar numa mensagem. `PUT /api/products/{id}/affiliate-link` com `{"url": "..."}` faz o mesmo pela API; url vazia remove. Na lista de ofertas, cada oferta mostra "link de afiliado ✓" ou, só nas ofertas, "sem link de afiliado". Sem link, a mensagem usa o link normal do produto (sem comissão).
+
+Dois efeitos do gerador do ML a ter em mente: o link leva ao seu **Perfil Social** (com o produto em destaque e o botão "Ir para produto", e outros produtos logo abaixo), e **cada link gerado entra na sua lista pública "Minhas recomendações"**. O texto do perfil ("Criador de conteúdos automotivos", no caso testado) é o que o comprador vê: vale ajustá-lo em "Editar perfil".
 
 ### CLI (continua disponível)
 

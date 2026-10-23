@@ -23,11 +23,7 @@ function OfferCard({ offer }: { offer: Offer }) {
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={offer.status} label={STATUS_LABEL[offer.status]} />
           <ScoreBadge score={offer.score} />
-          {offer.affiliate_origin === "template" ? (
-            <span className="text-xs text-slate-500" title="Montado pelo modelo, ainda não confirmado no painel do ML">
-              link por modelo
-            </span>
-          ) : offer.affiliate_url ? (
+          {offer.affiliate_url ? (
             <span className="text-xs text-emerald-700">link de afiliado ✓</span>
           ) : (
             offer.status === "offer" && <span className="text-xs text-amber-700">sem link de afiliado</span>

@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from achados.affiliate import effective_link, validate_affiliate_url, validate_template
+from achados.affiliate import effective_link, validate_affiliate_url
 from achados.collectors.mercadolivre_api import PRESETS, build_collector
 from achados.config import Settings, get_settings
 from achados.db import make_engine, make_session_factory
@@ -41,8 +41,8 @@ class OfferOut(BaseModel):
     external_id: str
     title: str
     url: str
-    affiliate_url: str | None  # o que vai na mensagem: o guardado ou o montado pelo modelo
-    affiliate_origin: str | None  # manual | api | template
+    affiliate_url: str | None  # o que vai na mensagem
+    affiliate_origin: str | None  # manual | api
     image_url: str | None
     price: float
     original_price: float | None
@@ -117,7 +117,6 @@ def create_app(
 ) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(settings.log_level)
-    validate_template(settings.ml_affiliate_template)  # modelo inválido falha na subida, não na primeira mensagem
     if sessions is None:
         sessions = make_session_factory(make_engine())
     engine = sessions.kw["bind"]
@@ -137,7 +136,7 @@ def create_app(
     manual_tasks: set[asyncio.Task] = set()
 
     def present(product: Product, verdict: Verdict) -> OfferOut:
-        link, origin = effective_link(product, settings.ml_affiliate_template)
+        link, origin = effective_link(product)
         return offer_out(product, verdict, link, origin)
 
     @asynccontextmanager

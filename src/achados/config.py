@@ -23,9 +23,6 @@ class Settings(BaseSettings):
     collect_startup_delay_seconds: float = 30.0
     collect_preset: str = "bjj"
     static_dir: str = ""  # pasta do front compilado (Vite); vazia = só a API
-    # Opcional: monta o link de afiliado do ML sozinho. Campos: {url} {product_url} {product_id} {item_id}.
-    # Vazio = desligado (o formato do painel do ML não é documentado oficialmente; ver achados/affiliate.py).
-    ml_affiliate_template: str = ""
     admin_token: str = ""  # sem ele, os endpoints /api/* respondem 503 (nunca ficam abertos por esquecimento)
 
 

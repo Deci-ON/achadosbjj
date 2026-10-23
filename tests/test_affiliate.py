@@ -3,10 +3,8 @@ import pytest
 from achados.affiliate import (
     ORIGIN_API,
     ORIGIN_MANUAL,
-    ORIGIN_TEMPLATE,
     effective_link,
     validate_affiliate_url,
-    validate_template,
 )
 from achados.models import Product
 
@@ -50,7 +48,7 @@ def test_links_validos(url):
         ("https://evilmercadolivre.com/x", "domínio não permitido"),  # sem o ponto: não é subdomínio
         ("https://mercadolivre.com@evil.com/x", "domínio não permitido"),  # o host de verdade é evil.com
         ("https://mercadolivre.com/a b", "espaços"),
-        ("https://mercadolivre.com/" + "a" * 600, "grande"),
+        ("https://mercadolivre.com/" + "a" * 1100, "grande"),
     ],
 )
 def test_links_invalidos(url, motivo):
@@ -58,59 +56,24 @@ def test_links_invalidos(url, motivo):
         validate_affiliate_url(url)
 
 
-def test_o_link_guardado_vence_o_modelo():
-    link, origin = effective_link(product(affiliate_url="https://mercadolivre.com/sec/abc"), "{product_url}?x=1")
+def test_o_link_guardado_e_o_que_vale():
+    link, origin = effective_link(product(affiliate_url="https://mercadolivre.com/sec/abc"))
 
     assert (link, origin) == ("https://mercadolivre.com/sec/abc", ORIGIN_MANUAL)
 
 
 def test_link_da_shopee_vem_da_api():
-    assert effective_link(product(source="shopee", affiliate_url="https://s.shopee.com.br/a"), "") == (
+    assert effective_link(product(source="shopee", affiliate_url="https://s.shopee.com.br/a")) == (
         "https://s.shopee.com.br/a",
         ORIGIN_API,
     )
 
 
-def test_sem_link_e_sem_modelo_nao_ha_link():
+def test_sem_link_guardado_nao_ha_link():
     assert effective_link(product()) == (None, None)
-    assert effective_link(product(), "") == (None, None)
 
 
-def test_modelo_monta_o_link_do_ml_com_os_campos_do_produto():
-    template = "{product_url}?matt_tool=ABC&matt_word=meuuser&item={item_id}"
-
-    link, origin = effective_link(product(), template)
-
-    assert link == "https://www.mercadolivre.com.br/p/MLB123?matt_tool=ABC&matt_word=meuuser&item=MLB999"
-    assert origin == ORIGIN_TEMPLATE
-
-
-def test_modelo_sem_raw_usa_o_id_do_external_id():
-    link, _ = effective_link(product(raw={}), "{product_url}?t=1")
-
-    assert link == "https://www.mercadolivre.com.br/p/MLB123?t=1"
-
-
-def test_modelo_so_vale_para_o_ml_nao_para_a_shopee():
-    assert effective_link(product(source="shopee"), "{product_url}?t=1") == (None, None)
-
-
-def test_modelo_valido_e_vazio_passam():
-    validate_template("")
-    validate_template("{product_url}?matt_tool=ABC&matt_word=user")
-    validate_template("{url}&matt_tool=ABC")
-
-
-@pytest.mark.parametrize(
-    "template",
-    [
-        "{campo_que_nao_existe}",  # campo desconhecido
-        "{url",  # chave sem fechar
-        "{}",  # campo posicional
-        "http://mercadolivre.com/p?x={product_id}",  # montaria um link http
-        "https://outro.com/{product_id}",  # montaria um link de outro domínio
-    ],
-)
-def test_modelo_invalido_falha_na_hora(template):
-    with pytest.raises(ValueError):
-        validate_template(template)
+def test_o_link_curto_e_o_completo_do_gerador_do_ml_sao_aceitos():
+    curto = "https://meli.la/1JhdESJ"
+    completo = "https://www.mercadolivre.com.br/social/on_lancer?matt_word=onlancer&matt_tool=27345668&forceInApp=true&ref=" + "Ab%2B" * 80
+    assert validate_affiliate_url(curto) == curto and validate_affiliate_url(completo) == completo

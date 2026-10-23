@@ -2,15 +2,16 @@ import { useState, type FormEvent } from "react";
 import { ApiError, api, type ProductDetail } from "./api";
 import { CopyButton } from "./components";
 
+// Gerador do painel de afiliados do ML (verificado na conta: "Gerador de produtos recomendados").
+const LINK_BUILDER = "https://www.mercadolivre.com.br/afiliados/linkbuilder";
+
 const ORIGIN_LABEL: Record<NonNullable<ProductDetail["affiliate_origin"]>, string> = {
   manual: "colado por você",
   api: "veio da API da loja",
-  template: "montado pelo modelo ML_AFFILIATE_TEMPLATE (não confirmado)",
 };
 
 export function AffiliateCard({ product, onChange }: { product: ProductDetail; onChange: (p: ProductDetail) => void }) {
-  // Um link montado pelo modelo não vira texto do campo: o que se salva é o que o painel do ML gerou.
-  const [value, setValue] = useState(product.affiliate_origin === "template" ? "" : (product.affiliate_url ?? ""));
+  const [value, setValue] = useState(product.affiliate_url ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
@@ -22,7 +23,7 @@ export function AffiliateCard({ product, onChange }: { product: ProductDetail; o
     try {
       const updated = await api.setAffiliateLink(product.id, next);
       onChange(updated);
-      setValue(updated.affiliate_origin === "template" ? "" : (updated.affiliate_url ?? ""));
+      setValue(updated.affiliate_url ?? "");
       setSaved(true);
     } catch (exc) {
       setError(exc instanceof ApiError ? exc.message : "Não consegui salvar o link.");
@@ -42,17 +43,29 @@ export function AffiliateCard({ product, onChange }: { product: ProductDetail; o
       <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Link de afiliado</h2>
 
       {isMl ? (
-        <ol className="mb-3 list-decimal space-y-1 pl-5 text-sm text-slate-600">
-          <li>
-            Copie a URL do produto:{" "}
-            <span className="inline-flex items-center gap-2">
-              <code className="max-w-[16rem] truncate rounded bg-slate-100 px-1.5 py-0.5 text-xs">{product.url}</code>
-              <CopyButton text={product.url} label="Copiar URL" />
-            </span>
-          </li>
-          <li>No painel de afiliados do Mercado Livre (Ferramentas, Gerador de link), gere o link curto.</li>
-          <li>Cole o link abaixo e salve. Ele vai na mensagem e a coleta não o apaga.</li>
-        </ol>
+        <>
+          <ol className="mb-2 list-decimal space-y-1.5 pl-5 text-sm text-slate-600">
+            <li>
+              Copie a URL do produto:{" "}
+              <span className="inline-flex flex-wrap items-center gap-2">
+                <code className="max-w-[16rem] truncate rounded bg-slate-100 px-1.5 py-0.5 text-xs">{product.url}</code>
+                <CopyButton text={product.url} label="Copiar URL" />
+              </span>
+            </li>
+            <li>
+              Abra o{" "}
+              <a className="font-medium text-slate-900 underline" href={LINK_BUILDER} target="_blank" rel="noreferrer">
+                gerador de links do ML
+              </a>
+              , cole a URL, clique em Gerar e copie o <b>link curto</b> (<code className="text-xs">meli.la/…</code>).
+            </li>
+            <li>Cole o link abaixo e salve. Ele vai na mensagem, e a coleta não o apaga.</li>
+          </ol>
+          <p className="mb-3 text-xs text-slate-500">
+            O link leva ao seu Perfil Social do ML, com este produto em destaque e o botão "Ir para produto". Cada link gerado também entra
+            na sua lista "Minhas recomendações", que é pública.
+          </p>
+        </>
       ) : (
         <p className="mb-3 text-sm text-slate-600">Nesta loja o link de afiliado vem da API; você também pode colar um por aqui.</p>
       )}

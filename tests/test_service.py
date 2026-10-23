@@ -424,22 +424,7 @@ def test_link_de_afiliado_404_e_exige_token(sessions, db):
         assert client.put(f"/api/products/{product_id(db)}/affiliate-link", json={"url": LINK}).status_code == 401
 
 
-def test_modelo_do_ml_monta_o_link_e_o_guardado_vence(sessions, db):
-    seed_offers(db)
-    pid = product_id(db)
-    app = make_app(sessions, ml_affiliate_template="{product_url}?matt_tool=ABC&matt_word=user")
-
-    with TestClient(app) as client:
-        templated = client.get(f"/api/products/{pid}", headers=AUTH).json()
-        put_link(client, pid, LINK)
-        manual = client.get(f"/api/products/{pid}", headers=AUTH).json()
-
-    assert templated["affiliate_url"] == "https://www.mercadolivre.com.br/p/oferta?matt_tool=ABC&matt_word=user"
-    assert templated["affiliate_origin"] == "template" and templated["message"].endswith(templated["affiliate_url"])
-    assert manual["affiliate_url"] == LINK and manual["affiliate_origin"] == "manual"
-
-
-def test_sem_modelo_e_sem_link_o_produto_fica_sem_link_de_afiliado(sessions, db):
+def test_sem_link_guardado_o_produto_fica_sem_link_de_afiliado(sessions, db):
     seed_offers(db)
 
     with TestClient(make_app(sessions)) as client:
@@ -447,8 +432,3 @@ def test_sem_modelo_e_sem_link_o_produto_fica_sem_link_de_afiliado(sessions, db)
 
     assert body["affiliate_url"] is None and body["affiliate_origin"] is None
     assert body["message"].endswith("👉 https://exemplo/product:oferta")  # cai no link normal do produto
-
-
-def test_modelo_invalido_falha_na_subida_do_servico(sessions):
-    with pytest.raises(ValueError, match="ML_AFFILIATE_TEMPLATE"):
-        make_app(sessions, ml_affiliate_template="{campo_que_nao_existe}")

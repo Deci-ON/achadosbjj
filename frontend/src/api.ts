@@ -6,8 +6,8 @@ export interface Offer {
   external_id: string;
   title: string;
   url: string;
-  affiliate_url: string | null; // o que vai na mensagem: o guardado ou o montado pelo modelo
-  affiliate_origin: "manual" | "api" | "template" | null;
+  affiliate_url: string | null; // o que vai na mensagem
+  affiliate_origin: "manual" | "api" | null;
   image_url: string | null;
   price: number;
   original_price: number | null;
