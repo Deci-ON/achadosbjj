@@ -276,3 +276,17 @@ def best_offer(product: dict, results: list[dict]) -> Offer | None:
             "offer": result,
         },
     )
+
+
+PRESETS = ("bjj",)
+
+
+def build_collector(settings, preset: str) -> MercadoLivreApiCollector:
+    """Coletor do ML pronto para uso a partir das configurações (`ML_CLIENT_*`, proxy, timeout)."""
+    if preset not in PRESETS:
+        raise MercadoLivreAPIError(f"preset desconhecido: {preset!r} (disponíveis: {', '.join(PRESETS)})")
+    http = httpx.Client(timeout=settings.request_timeout, proxy=settings.ml_proxy_url)
+    api = MercadoLivreAPI(settings.ml_client_id, settings.ml_client_secret, http=http)
+    return MercadoLivreApiCollector(
+        api, categories=BJJ_CATEGORIES, keywords=BJJ_KEYWORDS, domains=BJJ_DOMAINS
+    )
