@@ -21,6 +21,7 @@ from achados.collectors.mercadolivre_api import (
 from achados.collectors.shopee import SORT_SALES, ShopeeClient, ShopeeCollector
 from achados.config import get_settings
 from achados.db import make_engine, make_session_factory
+from achados.logs import configure_logging
 from achados.models import Base, Product
 from achados.probes import DbProbeCache
 from achados.offers import assess_products
@@ -186,7 +187,7 @@ def run_offers(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    configure_logging()
     args = build_parser().parse_args(argv)
 
     if args.command == "init-db":

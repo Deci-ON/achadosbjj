@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from achados.collectors.mercadolivre_api import PRESETS, build_collector
 from achados.config import Settings, get_settings
 from achados.db import make_engine, make_session_factory
+from achados.logs import configure_logging
 from achados.models import Base, CollectRun, Product
 from achados.offers import assess_products
 from achados.scheduler import CollectScheduler, LeaderLock
@@ -60,6 +61,7 @@ def create_app(
     scheduler: CollectScheduler | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
+    configure_logging(settings.log_level)
     if sessions is None:
         sessions = make_session_factory(make_engine())
     engine = sessions.kw["bind"]

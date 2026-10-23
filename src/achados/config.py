@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     ml_proxy_url: str | None = None
 
     request_timeout: float = 20.0
+    log_level: str = "INFO"
 
     # Serviço (achados.service): coleta agendada e API.
     collect_enabled: bool = True
