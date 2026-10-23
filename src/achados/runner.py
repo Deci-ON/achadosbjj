@@ -46,3 +46,11 @@ def run_collection(sessions: sessionmaker[Session], collector: Collector) -> Run
         session.commit()
         log.info("%s: %d vistos, %d novos", collector.source, run.items_seen, run.items_new)
         return RunResult(run.id, collector.source, run.items_seen, run.items_new, error)
+
+
+def record_failure(sessions: sessionmaker[Session], source: str, error: str) -> None:
+    """Registra em collect_runs uma coleta que nem chegou a começar (ex.: coletor não pôde ser montado)."""
+    with sessions() as session:
+        run = start_run(session, source)
+        finish_run(session, run, error=error)
+        session.commit()
