@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     collect_interval_seconds: float = 21600.0  # 6h
     collect_startup_delay_seconds: float = 30.0
     collect_preset: str = "bjj"
+    static_dir: str = ""  # pasta do front compilado (Vite); vazia = só a API
     admin_token: str = ""  # sem ele, os endpoints /api/* respondem 503 (nunca ficam abertos por esquecimento)
 
 

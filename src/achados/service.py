@@ -10,6 +10,7 @@ import contextlib
 import logging
 import secrets
 from contextlib import asynccontextmanager
+from pathlib import Path
 from datetime import datetime
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
@@ -20,6 +21,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from achados.collectors.mercadolivre_api import PRESETS, build_collector
 from achados.config import Settings, get_settings
 from achados.db import make_engine, make_session_factory
+from achados.frontend import mount_frontend
 from achados.logs import configure_logging
 from achados.models import Base, CollectRun, Product
 from achados.messages import format_offer_message
@@ -246,5 +248,8 @@ def create_app(
         manual_tasks.add(task)  # referência forte: o loop só guarda referência fraca
         task.add_done_callback(manual_tasks.discard)
         return {"status": "started"}
+
+    if settings.static_dir and not mount_frontend(app, Path(settings.static_dir)):
+        log.warning("STATIC_DIR=%s não tem index.html: servindo só a API", settings.static_dir)
 
     return app
