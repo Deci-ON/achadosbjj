@@ -12,5 +12,7 @@ RUN pip install --no-cache-dir .
 RUN useradd --create-home achados
 USER achados
 
-ENTRYPOINT ["achados"]
-CMD ["--help"]
+EXPOSE 8000
+# Um único worker: o disparo manual (POST /api/collect) só funciona no worker líder da coleta.
+# A CLI segue disponível: docker compose exec app achados stats
+CMD ["uvicorn", "achados.service:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

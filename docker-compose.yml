@@ -19,18 +19,30 @@ services:
       timeout: 3s
       retries: 10
 
-  # Uso: docker compose run --rm app collect mercadolivre --preset bjj
-  # Fica em um profile para o `up -d` subir só o banco.
+  # Serviço: coleta agendada (a cada COLLECT_INTERVAL_SECONDS) + API. CLI avulsa:
+  #   docker compose exec app achados offers
   app:
     build: .
-    profiles: ["tools"]
+    restart: unless-stopped
     env_file: .env
     environment:
       # Dentro da rede do compose o banco é o serviço `db`, não localhost.
       DATABASE_URL: postgresql+psycopg://achados:${POSTGRES_PASSWORD:-achados}@db:5432/achados
+    ports:
+      # Só em localhost do host; a 8000 e as portas do nginx já têm dono no tibiascope.
+      - "127.0.0.1:8001:8000"
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    # Uma coleta em andamento mantém uma thread viva e atrasa o fim do processo; se estourar este
+    # prazo o Docker mata o contêiner, e o próximo start fecha a coleta interrompida como erro.
+    stop_grace_period: 20s
 
 volumes:
   pgdata:

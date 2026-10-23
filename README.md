@@ -1,21 +1,44 @@
 # achadosbjj
 
-Coleta de ofertas (Shopee e Mercado Livre) para canais de achadinhos. Esta fase só **coleta e armazena** em Postgres, sem publicação.
+Coleta de ofertas (Shopee e Mercado Livre) para canais de achadinhos. Esta fase **coleta, armazena** em Postgres e **expõe** as ofertas por uma API protegida; ainda não publica nos canais.
 
 ## Como rodar
 
-Com Docker (recomendado; o banco fica só na rede interna do compose, sem porta no host):
+O achadosbjj é um **serviço**: um app FastAPI que coleta sozinho a cada 6 horas (laço no `lifespan`, no padrão do `bazaar_sync_loop` do tibiascope) e expõe uma API protegida por token. Sem cron.
 
 ```bash
-cp .env.example .env                 # ML_CLIENT_ID / ML_CLIENT_SECRET; SHOPEE_* quando tiver
-docker compose up -d db
-docker compose run --rm app check-ml                 # o ML aceita este IP/credencial? (2s, não grava)
-docker compose run --rm app init-db                  # a 1ª vez faz o build da imagem
+cp .env.example .env     # ML_CLIENT_ID, ML_CLIENT_SECRET, ADMIN_TOKEN, POSTGRES_PASSWORD (descomente); SHOPEE_* quando tiver
+docker compose up -d --build
+docker compose exec app achados check-ml     # o ML aceita este IP/credencial? (2s, não grava)
+```
 
-docker compose run --rm app collect mercadolivre --preset bjj          # kimonos e faixas (catálogo do ML)
-docker compose run --rm app collect shopee -k "kimono bjj" --pages 2
-docker compose run --rm app offers                                      # o que está em oferta de verdade
-docker compose run --rm app stats
+A primeira coleta começa 30s depois de o serviço subir, e só se a última coleta bem-sucedida for mais velha que o intervalo: reiniciar ou fazer deploy não recoleta à toa. Acompanhe:
+
+```bash
+docker compose logs -f app
+curl -H "Authorization: Bearer $ADMIN_TOKEN" localhost:8001/api/status
+```
+
+### API
+
+Escuta em `127.0.0.1:8001` do host. Tudo em `/api/*` exige `Authorization: Bearer $ADMIN_TOKEN`; sem `ADMIN_TOKEN` no `.env` responde 503 (nunca fica aberto por esquecimento).
+
+| Rota | O que faz |
+|---|---|
+| `GET /health` | público; confere o banco (usado pelo healthcheck do compose) |
+| `GET /api/status` | estado do agendador (líder, rodando, falhas seguidas, próximo horário), produtos por loja, últimas 5 coletas |
+| `GET /api/offers` | produtos pela pontuação por histórico: `status` (`offer` padrão, `no_offer`, `learning`, `irrelevant`), `min_score`, `limit`, `source`, `max_age_days`, `min_drop`, `min_history`; devolve também as contagens por situação |
+| `POST /api/collect` | dispara uma coleta agora, em segundo plano (202). 409 se o agendador está desligado, se este worker não é o líder, ou se já há uma coleta |
+
+Configuração (`.env`): `COLLECT_ENABLED` (true), `COLLECT_INTERVAL_SECONDS` (21600), `COLLECT_PRESET` (bjj), `COLLECT_STARTUP_DELAY_SECONDS` (30). Falha de coleta repete em 15 min, 30 min... até o intervalo normal, e fica registrada em `collect_runs` (visível em `/api/status`).
+
+### CLI (continua disponível)
+
+```bash
+docker compose exec app achados offers                    # o que está em oferta de verdade
+docker compose exec app achados stats
+docker compose exec app achados collect mercadolivre --preset bjj     # coleta manual, fora do agendamento
+docker compose exec app achados collect shopee -k "kimono bjj" --pages 2
 docker compose exec db psql -U achados -c "select title, price from products order by last_seen_at desc limit 10"
 ```
 
@@ -23,45 +46,25 @@ Sem Docker, com um Postgres seu (aponte `DATABASE_URL` no `.env`):
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-.venv/bin/achados check-ml && .venv/bin/achados init-db
-.venv/bin/achados collect mercadolivre --preset bjj
+.venv/bin/achados check-ml
+.venv/bin/uvicorn achados.service:create_app --factory --port 8001
 ```
 
-Testes (precisam de um Postgres com o banco `achados_test`; sem ele os testes de storage são pulados):
+### Deploy no servidor
+
+```bash
+git clone https://github.com/Deci-ON/achadosbjj.git ~/achadosbjj && cd ~/achadosbjj
+cp .env.example .env && nano .env      # edite no servidor; não passe o secret por chat
+./deploy.sh                            # git pull + build + up + espera ficar saudável
+```
+
+Para atualizar depois, `./deploy.sh` (reconstrói a imagem, o que `docker compose run` sozinho não faz). O banco não publica porta no host, então não conflita com outro Postgres do servidor. Se houver uma coleta em andamento no `docker compose stop`, o processo pode demorar a sair; se o prazo de 20s estourar, o Docker mata o contêiner, e o próximo start fecha a coleta interrompida como erro (a coleta nova só começa quando vencer o intervalo).
+
+Testes (só os de storage precisam de um Postgres com o banco `achados_test`; os demais usam SQLite em memória):
 
 ```bash
 .venv/bin/python -m pytest
 ```
-
-## Rodar em um servidor com Docker
-
-O `docker-compose.yml` tem o banco (`db`) e a CLI (`app`, no profile `tools`, que o `up -d` não sobe). O projeto se chama `achadosbjj`, então rede e volume não se misturam com outros compose do servidor.
-
-```bash
-# 1. Código na VPS: git clone https://github.com/Deci-ON/achadosbjj.git /opt/achadosbjj (depois, git pull)
-#    Lembre de dar `git push` da sua máquina antes do pull.
-
-# 2. Na VPS: criar o .env (edite no servidor; não passe o secret por chat)
-cd /opt/achadosbjj && cp .env.example .env && nano .env
-#    ML_CLIENT_ID, ML_CLIENT_SECRET, POSTGRES_PASSWORD (descomente a linha)
-
-# 3. Banco, e o teste que importa primeiro: o ML aceita o IP deste servidor?
-docker compose up -d db
-docker compose run --rm app check-ml          # 2s; "BLOQUEADO" = IP recusado, precisa de proxy
-
-# 4. Só se o passo 3 deu "ok"
-docker compose run --rm app init-db
-docker compose run --rm app collect mercadolivre --preset bjj     # ~7 min
-docker compose run --rm app stats
-```
-
-Agendar a cada 6 horas (`-T` é necessário no cron, que não tem terminal; `nice` para não competir com outros serviços do servidor):
-
-```cron
-0 */6 * * * cd /opt/achadosbjj && nice docker compose run --rm -T app collect mercadolivre --preset bjj >> /var/log/achadosbjj.log 2>&1
-```
-
-Depois de ~7 dias de coletas, `docker compose run --rm app offers` passa a listar ofertas de verdade. `check-ml` também serve em qualquer ambiente para validar credenciais.
 
 ## Modelo de dados
 
