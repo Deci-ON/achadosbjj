@@ -1,0 +1,109 @@
+{
+ "query_data": {
+  "highlight_type": "BEST_SELLER",
+  "criteria": "CATEGORY",
+  "id": "MLB1051"
+ },
+ "content": [
+  {
+   "id": "MLB54982411",
+   "position": 1,
+   "type": "PRODUCT"
+  },
+  {
+   "id": "MLB54961556",
+   "position": 2,
+   "type": "PRODUCT"
+  },
+  {
+   "id": "MLB55762063",
+   "position": 3,
+   "type": "PRODUCT"
+  },
+  {
+   "id": "MLB63364148",
+   "position": 4,
+   "type": "PRODUCT"
+  },
+  {
+   "id": "MLB47889235",
+   "position": 5,
+   "type": "PRODUCT"
+  },
+  {
+   "id": "MLB67410010",
+   "position": 6,
+   "type": "PRODUCT"
+  },
+  {
+   "id": "MLB47814270",
+   "position": 7,
+   "type": "PRODUCT"
+  },
+  {
+   "id": "MLB65041642",
+   "position": 8,
+   "type": "PRODUCT"
+  },
+  {
+   "id": "MLB39962085",
+   "position": 9,
+   "type": "PRODUCT"
+  },
+  {
+   "id": "MLB1019713876",
+   "position": 10,
+   "type": "PRODUCT"
+  },
+  {
+   "id": "MLBU4195394312",
+   "position": 11,
+   "type": "USER_PRODUCT"
+  },
+  {
+   "id": "MLB25263382",
+   "position": 12,
+   "type": "PRODUCT"
+  },
+  {
+   "id": "MLB38176139",
+   "position": 13,
+   "type": "PRODUCT"
+  },
+  {
+   "id": "MLB65271168",
+   "position": 14,
+   "type": "PRODUCT"
+  },
+  {
+   "id": "MLB70109633",
+   "position": 15,
+   "type": "PRODUCT"
+  },
+  {
+   "id": "MLB70514530",
+   "position": 16,
+   "type": "PRODUCT"
+  },
+  {
+   "id": "MLBU3452889261",
+   "position": 17,
+   "type": "USER_PRODUCT"
+  },
+  {
+   "id": "MLB66497052",
+   "position": 18,
+   "type": "PRODUCT"
+  },
+  {
+   "id": "MLB24028629",
+   "position": 19,
+   "type": "PRODUCT"
+  },
+  {
+   "id": "MLBU3766986795",
+   "position": 20,
+   "type": "USER_PRODUCT"
+  }
+ ]
+}

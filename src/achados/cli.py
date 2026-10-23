@@ -2,10 +2,12 @@ import argparse
 import logging
 import sys
 
+import httpx
 from sqlalchemy import func, select
 
 from achados.collectors.base import Collector, CollectorError
 from achados.collectors.mercadolivre import OFFERS_URL, MercadoLivreCollector, make_http_client
+from achados.collectors.mercadolivre_api import MercadoLivreAPI, MercadoLivreApiCollector
 from achados.collectors.shopee import SORT_SALES, ShopeeClient, ShopeeCollector
 from achados.config import get_settings
 from achados.db import make_engine, make_session_factory
@@ -30,9 +32,16 @@ def build_parser() -> argparse.ArgumentParser:
     shopee.add_argument("--pages", type=int, default=3)
     shopee.add_argument("--sort", type=int, default=SORT_SALES, help="sortType da API (1=relevância, 2=vendas, 5=comissão)")
 
-    ml = stores.add_parser("mercadolivre")
-    ml.add_argument("--url", default=OFFERS_URL, help="página de listagem a coletar")
-    ml.add_argument("--pages", type=int, default=3)
+    ml = stores.add_parser("mercadolivre", help="API oficial: mais vendidos por categoria + melhor oferta")
+    ml.add_argument(
+        "-c", "--category", action="append", help="id de categoria, ex. MLB1051 (repetível); sem ela, as categorias padrão"
+    )
+    ml.add_argument("--per-category", type=int, default=20, help="produtos por categoria (máx. 20)")
+    ml.add_argument("--min-discount", type=int, default=0, help="só grava ofertas com este desconto mínimo (%%)")
+
+    ml_html = stores.add_parser("mercadolivre-html", help="scraping do HTML de uma listagem (o ML costuma bloquear)")
+    ml_html.add_argument("--url", default=OFFERS_URL, help="página de listagem a coletar")
+    ml_html.add_argument("--pages", type=int, default=3)
 
     return parser
 
@@ -42,6 +51,12 @@ def _make_collector(args: argparse.Namespace) -> Collector:
     if args.store == "shopee":
         client = ShopeeClient(settings.shopee_app_id, settings.shopee_secret, settings.shopee_api_url)
         return ShopeeCollector(client, keywords=args.keyword, max_pages=args.pages, sort_type=args.sort)
+    if args.store == "mercadolivre":
+        http = httpx.Client(timeout=settings.request_timeout, proxy=settings.ml_proxy_url)
+        api = MercadoLivreAPI(settings.ml_client_id, settings.ml_client_secret, http=http)
+        return MercadoLivreApiCollector(
+            api, categories=args.category, per_category=args.per_category, min_discount=args.min_discount
+        )
     http = make_http_client(settings.ml_proxy_url, settings.request_timeout)
     return MercadoLivreCollector(http, listing_url=args.url, max_pages=args.pages)
 

@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     shopee_secret: str = ""
     shopee_api_url: str = "https://open-api.affiliate.shopee.com.br/graphql"
 
+    ml_client_id: str = ""
+    ml_client_secret: str = ""
     ml_proxy_url: str | None = None
 
     request_timeout: float = 20.0

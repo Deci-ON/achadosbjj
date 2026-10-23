@@ -11,7 +11,7 @@ docker compose up -d db         # Postgres 16 em 127.0.0.1:5432
 .venv/bin/achados init-db
 
 .venv/bin/achados collect shopee -k "fone bluetooth" -k "air fryer" --pages 3
-.venv/bin/achados collect mercadolivre --pages 3
+.venv/bin/achados collect mercadolivre -c MLB1051 --per-category 10 --min-discount 20
 .venv/bin/achados stats
 ```
 
@@ -34,6 +34,9 @@ As tabelas são criadas com `create_all`. Quando o esquema estabilizar, vale ado
 | Fonte | Como coleta | Validado contra a loja real? |
 |---|---|---|
 | Shopee | API GraphQL de afiliados (`productOfferV2`), com assinatura SHA256 | **Não.** Faltam credenciais; testado só com respostas simuladas |
-| Mercado Livre | HTML da listagem (`/ofertas`), cards `poly-card` | **Não.** O ML bloqueou a rede de desenvolvimento ("verificação de conta"); o parser foi escrito contra uma fixture feita à mão |
+| Mercado Livre (`collect mercadolivre`) | API oficial, fluxo `client_credentials`: `/highlights` (mais vendidos por categoria) + `/products/{id}` + `/products/{id}/items` | **Sim**, com o token real; os testes usam respostas reais em `tests/fixtures/ml_*.json` |
+| Mercado Livre (`collect mercadolivre-html`) | HTML da listagem (`/ofertas`), cards `poly-card` | **Não.** O ML exige login (`account-verification`) até no navegador; o parser foi escrito contra uma fixture feita à mão |
 
-Antes de confiar nos dados: rode a coleta da Shopee com credenciais reais, e salve o HTML real de `/ofertas` em `tests/fixtures/` para validar o parser do ML. Se a VPS também cair na verificação do ML, configure `ML_PROXY_URL` ou migre a coleta do ML para a API oficial (exige app registrado).
+Mercado Livre pela API: precisa de `ML_CLIENT_ID` e `ML_CLIENT_SECRET` (app criado em developers.mercadolivre.com.br/devcenter). Limites vistos com esse token: `/sites/MLB/search`, `/items/{id}`, `/user-products/*` e `/seller-promotions` respondem 403, então não há busca por palavra-chave nem título/foto por anúncio (vêm do produto de catálogo). A coleta grava, por produto, a oferta nova de maior desconto (empate: menor preço) e o link `https://www.mercadolivre.com.br/p/{produto}?wid={anúncio}`. Só uma fração das ofertas tem `original_price`, então descontos reais são minoria; use `--min-discount` para filtrar. O link de afiliado não vem da API.
+
+Shopee: rode a coleta com credenciais reais antes de confiar nos dados.
