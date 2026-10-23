@@ -1,0 +1,45 @@
+{
+  "data": {
+    "productOfferV2": {
+      "nodes": [
+        {
+          "itemId": "111",
+          "shopId": "9",
+          "productName": "Fone Bluetooth TWS",
+          "shopName": "Loja Exemplo",
+          "imageUrl": "https://img.example/fone.jpg",
+          "priceMin": "49.90",
+          "priceMax": "59.90",
+          "priceDiscountRate": 50,
+          "commissionRate": "0.0825",
+          "sales": 1520,
+          "ratingStar": "4.8",
+          "productLink": "https://shopee.com.br/product/9/111",
+          "offerLink": "https://s.shopee.com.br/abc123"
+        },
+        {
+          "itemId": "222",
+          "shopId": "9",
+          "productName": "Cabo USB-C",
+          "shopName": "Loja Exemplo",
+          "imageUrl": "https://img.example/cabo.jpg",
+          "priceMin": "9.90",
+          "priceMax": "9.90",
+          "priceDiscountRate": 0,
+          "commissionRate": "0.05",
+          "sales": 40,
+          "ratingStar": "4.5",
+          "productLink": "",
+          "offerLink": "https://s.shopee.com.br/def456"
+        },
+        {
+          "itemId": "333",
+          "shopId": "9",
+          "productName": "Item sem preço",
+          "priceMin": null
+        }
+      ],
+      "pageInfo": {"page": 1, "limit": 50, "hasNextPage": true}
+    }
+  }
+}
