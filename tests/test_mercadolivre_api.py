@@ -39,6 +39,7 @@ class FakeML:
         self.token_ttl = token_ttl
         self.reject_next_with_401 = False
         self.with_offers = {PRODUCT_ID}
+        self.search_400_from_offset: int | None = None  # como o ML: offset=200 devolve 400
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -55,6 +56,8 @@ class FakeML:
             params = request.url.params
             offset, limit = int(params["offset"]), int(params["limit"])
             self.search_params.append(dict(params))
+            if self.search_400_from_offset is not None and offset >= self.search_400_from_offset:
+                return httpx.Response(400, json={"message": "offset out of range", "status": 400})
             return httpx.Response(200, json={**SEARCH, "results": SEARCH["results"][offset : offset + limit]})
         if path == f"/products/{PRODUCT_ID}":
             return httpx.Response(200, json=PRODUCT)
@@ -325,3 +328,49 @@ def test_429_persistente_vira_blocked_depois_das_esperas():
     with pytest.raises(BlockedError, match="429"):
         api.get("/products/search")
     assert sleeps == [3.0, 10.0, 30.0]
+
+
+# --- limite de paginação da busca (400) ----------------------------------
+
+
+def test_400_de_paginacao_encerra_a_busca_sem_derrubar_a_coleta(monkeypatch):
+    monkeypatch.setattr(mercadolivre_api, "SEARCH_PAGE_SIZE", 3)
+    fake = FakeML()
+    fake.search_400_from_offset = 6  # a 3ª página (offset=6) já dá 400, como o offset=200 do ML
+
+    offers = list(search_collector(fake, keywords=["kimono"], search_pages=10).collect())
+
+    assert [p["offset"] for p in fake.search_params] == ["0", "3", "6"]  # parou no primeiro 400
+    assert len(offers) == len(SEARCH_WITH_OFFERS)  # o que veio nas páginas anteriores foi coletado
+
+
+def test_400_nao_impede_as_demais_palavras_chave(monkeypatch):
+    monkeypatch.setattr(mercadolivre_api, "SEARCH_PAGE_SIZE", 3)
+    fake = FakeML()
+    fake.search_400_from_offset = 6
+
+    list(search_collector(fake, keywords=["kimono", "faixa"], search_pages=10).collect())
+
+    assert [p["q"] for p in fake.search_params].count("faixa") == 3  # a 2ª palavra também foi buscada
+
+
+def test_400_na_primeira_pagina_e_erro_de_verdade():
+    fake = FakeML()
+    fake.search_400_from_offset = 0  # consulta inválida, não fim de resultados
+
+    with pytest.raises(httpx.HTTPStatusError):
+        list(search_collector(fake, keywords=["kimono"]).collect())
+
+
+def test_outros_erros_de_busca_continuam_subindo(monkeypatch):
+    monkeypatch.setattr(mercadolivre_api, "SEARCH_PAGE_SIZE", 3)
+
+    class Boom(FakeML):
+        def __call__(self, request):
+            if request.url.path == "/products/search" and request.url.params["offset"] != "0":
+                return httpx.Response(500)
+            return super().__call__(request)
+
+    # 500 depois da primeira página não é "fim de resultados": a falha precisa aparecer
+    with pytest.raises(httpx.HTTPStatusError):
+        list(search_collector(Boom(), keywords=["kimono"], search_pages=5).collect())

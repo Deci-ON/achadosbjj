@@ -1,3 +1,4 @@
+import logging
 import time
 from collections.abc import Callable, Iterator
 from decimal import Decimal, InvalidOperation
@@ -6,6 +7,8 @@ import httpx
 
 from achados.collectors.base import BlockedError, CollectorError
 from achados.schemas import Offer
+
+log = logging.getLogger("achados")
 
 API_URL = "https://api.mercadolibre.com"
 SITE_URL = "https://www.mercadolivre.com.br"
@@ -203,16 +206,19 @@ class MercadoLivreApiCollector:
 
     def _search(self, keyword: str) -> Iterator[dict]:
         for page in range(self._search_pages):
-            body = self._api.get(
-                "/products/search",
-                {
-                    "status": "active",
-                    "site_id": "MLB",
-                    "q": keyword,
-                    "limit": SEARCH_PAGE_SIZE,
-                    "offset": page * SEARCH_PAGE_SIZE,
-                },
-            )
+            offset = page * SEARCH_PAGE_SIZE
+            try:
+                body = self._api.get(
+                    "/products/search",
+                    {"status": "active", "site_id": "MLB", "q": keyword, "limit": SEARCH_PAGE_SIZE, "offset": offset},
+                )
+            except httpx.HTTPStatusError as exc:
+                # O ML só pagina a busca de catálogo até uns 150 resultados (offset=200 já dá 400).
+                # Depois da primeira página, 400 quer dizer "acabou"; na primeira é erro de verdade.
+                if exc.response.status_code == 400 and offset > 0:
+                    log.info("busca %r: o ML não pagina além de offset=%d; seguindo com o que veio", keyword, offset)
+                    break
+                raise
             results = (body or {}).get("results", [])
             for product in results:
                 if self._domains is None or product.get("domain_id") in self._domains:
