@@ -2,18 +2,19 @@
 
 Coleta de ofertas (Shopee e Mercado Livre) para canais de achadinhos. Esta fase só **coleta e armazena** em Postgres, sem publicação.
 
-## Como rodar
+## Como rodar (Docker)
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-cp .env.example .env            # preencha SHOPEE_APP_ID / SHOPEE_SECRET
-docker compose up -d db         # Postgres 16 em 127.0.0.1:5432
-.venv/bin/achados init-db
-
-.venv/bin/achados collect shopee -k "fone bluetooth" -k "air fryer" --pages 3
-.venv/bin/achados collect mercadolivre --pages 3
-.venv/bin/achados stats
+cp .env.example .env                 # preencha SHOPEE_APP_ID / SHOPEE_SECRET quando tiver
+docker compose up -d db              # Postgres 16, só na rede interna do compose
+docker compose run --rm app init-db  # a 1ª vez faz o build da imagem
+docker compose run --rm app collect mercadolivre --url "https://lista.mercadolivre.com.br/kimono-bjj" --pages 2
+docker compose run --rm app collect shopee -k "kimono bjj" --pages 2
+docker compose run --rm app stats
+docker compose exec db psql -U achados -c "select title, price, discount_pct from products order by last_seen_at desc limit 10"
 ```
+
+O banco não publica porta no host, então não conflita com outro Postgres da máquina. Sem Docker, dá para usar `pip install -e ".[dev]"` e o comando `achados`, apontando `DATABASE_URL` para um Postgres seu.
 
 Testes (precisam de um Postgres com o banco `achados_test`; sem ele os testes de storage são pulados):
 

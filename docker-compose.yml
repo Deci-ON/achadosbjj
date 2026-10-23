@@ -6,10 +6,24 @@ services:
       POSTGRES_USER: achados
       POSTGRES_PASSWORD: achados
       POSTGRES_DB: achados
-    ports:
-      - "127.0.0.1:5432:5432"
+    # Sem `ports:` de propósito: o banco só é acessível pela rede interna do
+    # compose, então não conflita com outro Postgres da VPS (ex.: tibiascope).
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U achados"]
+      interval: 5s
+      retries: 10
+
+  app:
+    build: .
+    profiles: ["tools"]  # não sobe com `up`; use `docker compose run --rm app ...`
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://achados:achados@db:5432/achados
+    depends_on:
+      db:
+        condition: service_healthy
 
 volumes:
   pgdata:
