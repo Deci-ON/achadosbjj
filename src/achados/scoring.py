@@ -37,9 +37,11 @@ class NicheRules:
     excluded_domains: tuple[str, ...] = ()
 
 
+# O domínio MLB-MARTIAL_ARTS_UNIFORMS mistura jiu-jitsu, judô, caratê e taekwondo (medido em 2026-10-23:
+# 37% dos 361 produtos coletados eram de outros esportes), então o título precisa citar o nicho.
+# "kimono" e "judo" sozinhos não bastam; "Judô / Jiu Jitsu" (multiuso) passa pelo "jiu jitsu".
 BJJ_RULES = NicheRules(
     include=(
-        "kimono",
         "jiu jitsu",
         "jiu-jitsu",
         "jiujitsu",
@@ -48,7 +50,6 @@ BJJ_RULES = NicheRules(
         "rashguard",
         "no-gi",
         "no gi",
-        "judo",
     ),
     exclude=(
         "caneca",
@@ -68,8 +69,9 @@ BJJ_RULES = NicheRules(
         "decoracao",
         "cardigan",
         "praia",
+        "taekwondo",
+        "dobok",
     ),
-    allowed_domains=("MLB-MARTIAL_ARTS_UNIFORMS", "MLB-MARTIAL_ARTS_BELTS"),
     excluded_domains=("MLB-MUGS", "MLB-BABY_SWIMWEAR"),
 )
 

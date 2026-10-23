@@ -94,7 +94,7 @@ def test_observacao_termina_em_last_seen_e_nao_em_agora(db):
 
 
 def test_filtra_por_loja_e_aceita_dominio_do_nicho(db):
-    add_product(db, "ml", "Faixa Azul 3,10m", [(40, "100"), (3, "70")], domain="MLB-MARTIAL_ARTS_BELTS", seen_days_ago=0.1)
+    add_product(db, "ml", "Faixa Jiu Jitsu Azul 3,10m", [(40, "100"), (3, "70")], domain="MLB-MARTIAL_ARTS_BELTS", seen_days_ago=0.1)
     add_product(db, "sp", "Kimono Jiu Jitsu Shopee", [(40, "100"), (3, "70")], source="shopee", seen_days_ago=0.1)
 
     assert [p.external_id for p, _ in assess_products(db, now=NOW, source="mercadolivre")] == ["ml"]

@@ -8,6 +8,7 @@ from achados.scoring import (
     OFFER,
     PricePoint,
     assess,
+    NicheRules,
     check_niche,
     time_weighted_median,
 )
@@ -32,7 +33,24 @@ def test_nicho_aceita_kimono_faixa_e_rash_guard():
     assert check_niche("Kimono Jiu Jitsu Trançado Koral", None) is None
     assert check_niche("Kimonos Jiu-Jitsu Adulto Atama", None) is None  # plural
     assert check_niche("Rash Guard Manga Longa Vulkan No-Gi", None) is None
-    assert check_niche("Faixa Azul 3,10m 8 Costuras", "MLB-MARTIAL_ARTS_BELTS") is None  # categoria basta
+    assert check_niche("Faixa Jiu-Jitsu Atama Adulto 6 Costuras Azul A2", "MLB-MARTIAL_ARTS_BELTS") is None
+    assert check_niche("Kimono Infantil Naja Jiu-Jitsu Judô Karatê M1", "MLB-MARTIAL_ARTS_UNIFORMS") is None  # multiuso
+
+
+def test_nicho_exige_o_esporte_no_titulo_mesmo_em_categoria_de_artes_marciais():
+    sem_bjj = "nenhuma palavra do nicho no título"
+    uniformes = "MLB-MARTIAL_ARTS_UNIFORMS"
+    assert check_niche("Judo Gi Infantil Reforçado Com Faixa Branco M2", uniformes) == sem_bjj
+    assert check_niche("Kimono Shiroi Karatê Microfibra Adulto Branco", uniformes) == sem_bjj
+    assert check_niche("Kimono Trançado adidas Judo Training J500", uniformes) == sem_bjj
+    assert check_niche("Faixa De Kimono Judo Karate Grossa Marrom", "MLB-MARTIAL_ARTS_BELTS") == sem_bjj
+    assert "taekwondo" in check_niche("Dobok Taekwondo Infantil Shiroi Start", uniformes)
+
+
+def test_regras_com_categoria_permitida_ainda_funcionam_para_outros_nichos():
+    rules = NicheRules(include=("boxe",), allowed_domains=("MLB-BOXING_GLOVES",))
+    assert check_niche("Luva Everlast Pro", "MLB-BOXING_GLOVES", rules) is None
+    assert check_niche("Luva Everlast Pro", None, rules) == "nenhuma palavra do nicho no título"
 
 
 def test_nicho_rejeita_brindes_e_categorias_erradas():
