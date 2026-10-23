@@ -3,3 +3,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .env
+
+# Front-end (frontend/): dependências e build saem do Docker, não do git
+frontend/node_modules/
+frontend/dist/
