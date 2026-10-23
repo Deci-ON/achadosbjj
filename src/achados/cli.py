@@ -20,6 +20,7 @@ from achados.collectors.shopee import SORT_SALES, ShopeeClient, ShopeeCollector
 from achados.config import get_settings
 from achados.db import make_engine, make_session_factory
 from achados.models import Base, Product
+from achados.probes import DbProbeCache
 from achados.offers import assess_products
 from achados.scoring import BJJ_RULES, IRRELEVANT, LEARNING, NO_OFFER, OFFER, ScoringConfig
 from achados.runner import run_collection
@@ -87,6 +88,7 @@ def _make_collector(args: argparse.Namespace) -> Collector:
             domains = domains or BJJ_DOMAINS
         return MercadoLivreApiCollector(
             api,
+            probe_cache=DbProbeCache(make_session_factory(make_engine())),
             categories=categories,
             keywords=keywords,
             domains=domains,

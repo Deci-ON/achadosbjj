@@ -68,3 +68,16 @@ class PriceSnapshot(Base):
     collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     product: Mapped[Product] = relationship(back_populates="snapshots")
+
+
+class EmptyCatalogProduct(Base):
+    """Produto de catálogo que, na última checagem, não tinha oferta ativa.
+
+    Cerca de 77% dos produtos achados na busca do ML respondem 404 em /items; sem este cache cada
+    coleta repetiria essas chamadas. Quem ganhar oferta volta a ser checado depois do prazo de revalidação.
+    """
+
+    __tablename__ = "empty_catalog_products"
+
+    product_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

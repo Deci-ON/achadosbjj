@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import httpx
@@ -6,6 +7,7 @@ import pytest
 
 from achados.collectors.base import BlockedError
 from achados.collectors import mercadolivre_api
+from achados.probes import DbProbeCache
 from achados.collectors.mercadolivre_api import (
     BJJ_DOMAINS,
     MercadoLivreAPI,
@@ -374,3 +376,88 @@ def test_outros_erros_de_busca_continuam_subindo(monkeypatch):
     # 500 depois da primeira página não é "fim de resultados": a falha precisa aparecer
     with pytest.raises(httpx.HTTPStatusError):
         list(search_collector(Boom(), keywords=["kimono"], search_pages=5).collect())
+
+
+# --- cache de produtos sem oferta ----------------------------------------
+
+MUG_ID = "MLB60127635"  # no fixture de busca, é o único sem oferta no servidor falso
+
+
+def cached_collector(fake, cache, **kwargs):
+    fake.with_offers = set(SEARCH_WITH_OFFERS)
+    return MercadoLivreApiCollector(make_api(fake), keywords=["kimono"], probe_cache=cache, sleep=lambda s: None, **kwargs)
+
+
+def items_calls(fake, product_id):
+    return fake.calls.count(f"/products/{product_id}/items")
+
+
+def test_cache_pula_produtos_sem_oferta_na_coleta_seguinte(sessions):
+    fake, cache = FakeML(), DbProbeCache(sessions)
+
+    first = cached_collector(fake, cache)
+    assert len(list(first.collect())) == 5 and first.skipped_empty == 0
+    assert items_calls(fake, MUG_ID) == 1
+
+    second = cached_collector(fake, cache)
+    offers = list(second.collect())
+
+    assert items_calls(fake, MUG_ID) == 1  # não consultou de novo
+    assert second.skipped_empty == 1
+    assert len(offers) == 5  # quem tem oferta continua sendo consultado e gravado
+    assert items_calls(fake, "MLB79731026") == 2
+
+
+def test_passado_o_prazo_revalida_e_quem_ganhou_oferta_volta(sessions):
+    now = [datetime(2026, 10, 23, 12, 0, tzinfo=timezone.utc)]
+    cache = DbProbeCache(sessions, clock=lambda: now[0])
+    fake = FakeML()
+    list(cached_collector(fake, cache).collect())
+    assert cache.fresh_empty_ids() == {MUG_ID}
+
+    now[0] += timedelta(hours=25)
+    fake.with_offers = set(SEARCH_WITH_OFFERS) | {MUG_ID}  # a caneca ganhou oferta
+    again = MercadoLivreApiCollector(make_api(fake), keywords=["kimono"], probe_cache=cache, sleep=lambda s: None)
+    offers = list(again.collect())
+
+    assert items_calls(fake, MUG_ID) == 2 and again.skipped_empty == 0
+    assert MUG_ID in {o.raw["product_id"] for o in offers}
+    assert cache.fresh_empty_ids() == set()
+
+
+def test_cache_grava_o_que_aprendeu_mesmo_se_a_coleta_falha(sessions):
+    class Limited(FakeML):
+        def __call__(self, request):
+            if request.url.path == "/products/MLB63085442/items":  # o último da busca (a faixa)
+                return httpx.Response(429)
+            return super().__call__(request)
+
+    fake, cache = Limited(), DbProbeCache(sessions)
+    collector = MercadoLivreApiCollector(
+        make_api(fake, sleep=lambda s: None), keywords=["kimono"], probe_cache=cache, sleep=lambda s: None
+    )
+    fake.with_offers = set(SEARCH_WITH_OFFERS)
+
+    with pytest.raises(BlockedError):
+        list(collector.collect())
+
+    assert cache.fresh_empty_ids() == {MUG_ID}  # a caneca já tinha sido checada antes da falha
+
+
+def test_parar_de_consumir_antes_do_fim_tambem_grava(sessions):
+    fake, cache = FakeML(), DbProbeCache(sessions)
+    collector = cached_collector(fake, cache)
+
+    stream = collector.collect()
+    for _ in range(5):  # as 4 de uniforme e a caneca (sem oferta) vêm antes da faixa
+        next(stream)
+    stream.close()
+
+    assert cache.fresh_empty_ids() == {MUG_ID}
+
+
+def test_sem_cache_o_comportamento_nao_muda():
+    fake = FakeML()
+    collector = search_collector(fake, keywords=["kimono"])
+
+    assert len(list(collector.collect())) == 5 and collector.skipped_empty == 0

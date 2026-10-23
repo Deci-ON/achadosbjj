@@ -69,7 +69,7 @@ def create_app(
         scheduler = CollectScheduler(
             sessions,
             LeaderLock(engine),
-            lambda: build_collector(settings, settings.collect_preset),
+            lambda: build_collector(settings, settings.collect_preset, sessions),
             "mercadolivre",
             interval=settings.collect_interval_seconds,
             startup_delay=settings.collect_startup_delay_seconds,

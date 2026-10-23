@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation
 import httpx
 
 from achados.collectors.base import BlockedError, CollectorError
+from achados.probes import DbProbeCache, ProbeCache
 from achados.schemas import Offer
 
 log = logging.getLogger("achados")
@@ -162,8 +163,11 @@ class MercadoLivreApiCollector:
         min_discount: int = 0,
         delay: float = 0.2,
         sleep: Callable[[float], None] = time.sleep,
+        probe_cache: ProbeCache | None = None,
     ):
         self._api = api
+        self._probe_cache = probe_cache
+        self.skipped_empty = 0  # produtos pulados pelo cache na última coleta
         self._categories = categories if categories is not None else ([] if keywords else list(DEFAULT_CATEGORIES))
         self._keywords = keywords or []
         self._domains = domains
@@ -175,15 +179,30 @@ class MercadoLivreApiCollector:
 
     def collect(self) -> Iterator[Offer]:
         seen: set[str] = set()
-        for product in self._candidates(seen):
-            if product["id"] in seen:
-                continue
-            seen.add(product["id"])
-            offer = self._offer_for(product)
-            self._sleep(self._delay)
-            # `discount_pct` é o desconto declarado pelo vendedor; a oferta de verdade sai do histórico.
-            if offer and (offer.discount_pct or 0) >= self._min_discount:
-                yield offer
+        known_empty = self._probe_cache.fresh_empty_ids() if self._probe_cache else set()
+        empty: set[str] = set()
+        with_offers: set[str] = set()
+        self.skipped_empty = 0
+        try:
+            for product in self._candidates(seen):
+                if product["id"] in seen:
+                    continue
+                seen.add(product["id"])
+                if product["id"] in known_empty:
+                    self.skipped_empty += 1
+                    continue
+                offer = self._offer_for(product)
+                self._sleep(self._delay)
+                (with_offers if offer else empty).add(product["id"])
+                # `discount_pct` é o desconto declarado pelo vendedor; a oferta de verdade sai do histórico.
+                if offer and (offer.discount_pct or 0) >= self._min_discount:
+                    yield offer
+        finally:
+            # Também numa coleta que falhou no meio: o que já foi checado não precisa ser refeito.
+            if self._probe_cache:
+                self._probe_cache.record(empty, with_offers)
+            if self.skipped_empty:
+                log.info("cache: %d produtos sem oferta pulados (revalidados após 24h)", self.skipped_empty)
 
     def _candidates(self, seen: set[str]) -> Iterator[dict]:
         for category in self._categories:
@@ -287,12 +306,19 @@ def best_offer(product: dict, results: list[dict]) -> Offer | None:
 PRESETS = ("bjj",)
 
 
-def build_collector(settings, preset: str) -> MercadoLivreApiCollector:
-    """Coletor do ML pronto para uso a partir das configurações (`ML_CLIENT_*`, proxy, timeout)."""
+def build_collector(settings, preset: str, sessions=None) -> MercadoLivreApiCollector:
+    """Coletor do ML pronto para uso a partir das configurações (`ML_CLIENT_*`, proxy, timeout).
+
+    Com `sessions`, usa o cache de produtos sem oferta (tabela `empty_catalog_products`).
+    """
     if preset not in PRESETS:
         raise MercadoLivreAPIError(f"preset desconhecido: {preset!r} (disponíveis: {', '.join(PRESETS)})")
     http = httpx.Client(timeout=settings.request_timeout, proxy=settings.ml_proxy_url)
     api = MercadoLivreAPI(settings.ml_client_id, settings.ml_client_secret, http=http)
     return MercadoLivreApiCollector(
-        api, categories=BJJ_CATEGORIES, keywords=BJJ_KEYWORDS, domains=BJJ_DOMAINS
+        api,
+        categories=BJJ_CATEGORIES,
+        keywords=BJJ_KEYWORDS,
+        domains=BJJ_DOMAINS,
+        probe_cache=DbProbeCache(sessions) if sessions is not None else None,
     )
