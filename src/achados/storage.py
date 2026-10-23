@@ -66,7 +66,10 @@ def save_offers(session: Session, run: CollectRun, offers: Iterable[Offer]) -> N
             price_changed = (product.price, product.original_price) != (offer.price, offer.original_price)
 
         for field in _FIELDS:
-            setattr(product, field, getattr(offer, field))
+            value = getattr(offer, field)
+            if field == "affiliate_url" and value is None:
+                continue  # o ML não traz link de afiliado: o colado à mão não pode ser apagado a cada coleta
+            setattr(product, field, value)
         product.last_seen_at = now
 
         if price_changed:
