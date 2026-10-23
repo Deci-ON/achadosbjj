@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
+from achados.affiliate import effective_link, validate_affiliate_url, validate_template
 from achados.collectors.mercadolivre_api import PRESETS, build_collector
 from achados.config import Settings, get_settings
 from achados.db import make_engine, make_session_factory
@@ -40,7 +41,8 @@ class OfferOut(BaseModel):
     external_id: str
     title: str
     url: str
-    affiliate_url: str | None
+    affiliate_url: str | None  # o que vai na mensagem: o guardado ou o montado pelo modelo
+    affiliate_origin: str | None  # manual | api | template
     image_url: str | None
     price: float
     original_price: float | None
@@ -65,20 +67,25 @@ class ProductDetailOut(OfferOut):
     history: list[PricePointOut]
 
 
+class AffiliateLinkIn(BaseModel):
+    url: str | None = None  # vazio ou null remove o link guardado
+
+
 class OffersResponse(BaseModel):
     counts: dict[str, int]
     items: list[OfferOut]
 
 
-def offer_out(product: Product, verdict: Verdict) -> OfferOut:
-    link = product.affiliate_url or product.url
+def offer_out(product: Product, verdict: Verdict, affiliate_url: str | None = None, origin: str | None = None) -> OfferOut:
+    link = affiliate_url or product.url
     return OfferOut(
         id=product.id,
         source=product.source,
         external_id=product.external_id,
         title=product.title,
         url=product.url,
-        affiliate_url=product.affiliate_url,
+        affiliate_url=affiliate_url,
+        affiliate_origin=origin,
         image_url=product.image_url,
         price=float(product.price),
         original_price=float(product.original_price) if product.original_price else None,
@@ -110,6 +117,7 @@ def create_app(
 ) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(settings.log_level)
+    validate_template(settings.ml_affiliate_template)  # modelo inválido falha na subida, não na primeira mensagem
     if sessions is None:
         sessions = make_session_factory(make_engine())
     engine = sessions.kw["bind"]
@@ -127,6 +135,10 @@ def create_app(
         )
 
     manual_tasks: set[asyncio.Task] = set()
+
+    def present(product: Product, verdict: Verdict) -> OfferOut:
+        link, origin = effective_link(product, settings.ml_affiliate_template)
+        return offer_out(product, verdict, link, origin)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -217,7 +229,7 @@ def create_app(
                 continue  # a busca vale também para as contagens: elas descrevem o que o filtro mostra
             counts[verdict.status] += 1
             if verdict.status == status and verdict.score >= min_score and len(items) < limit:
-                items.append(offer_out(product, verdict))
+                items.append(present(product, verdict))
         return OffersResponse(counts=counts, items=items)
 
     @app.get("/api/products/{product_id}", response_model=ProductDetailOut, dependencies=[Depends(require_admin)])
@@ -228,12 +240,27 @@ def create_app(
             raise HTTPException(404, "produto não encontrado")
         product, verdict, history = found
         return ProductDetailOut(
-            **offer_out(product, verdict).model_dump(),
+            **present(product, verdict).model_dump(),
             history=[
                 PricePointOut(price=float(price), original_price=float(original) if original else None, collected_at=at)
                 for price, original, at in history
             ],
         )
+
+    @app.put("/api/products/{product_id}/affiliate-link", response_model=ProductDetailOut, dependencies=[Depends(require_admin)])
+    def set_affiliate_link(product_id: int, body: AffiliateLinkIn):
+        """Guarda (ou, com url vazia, remove) o link de afiliado do produto. A coleta não o apaga."""
+        try:
+            url = validate_affiliate_url(body.url) if body.url and body.url.strip() else None
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        with sessions() as session:
+            product = session.get(Product, product_id)
+            if product is None:
+                raise HTTPException(404, "produto não encontrado")
+            product.affiliate_url = url
+            session.commit()
+        return product_detail(product_id)
 
     @app.post("/api/collect", status_code=202, dependencies=[Depends(require_admin)])
     async def collect():

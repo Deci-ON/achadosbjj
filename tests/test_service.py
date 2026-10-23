@@ -353,3 +353,102 @@ def test_detalhe_404_e_exige_token(sessions):
         assert client.get("/api/products/999999", headers=AUTH).status_code == 404
         assert client.get("/api/products/1").status_code == 401
         assert client.get("/api/products/abc", headers=AUTH).status_code == 422
+
+
+# --- link de afiliado ----------------------------------------------------
+
+LINK = "https://mercadolivre.com/sec/abc123"
+
+
+def product_id(db, external_id="product:oferta") -> int:
+    return db.scalars(select(Product).where(Product.external_id == external_id)).one().id
+
+
+def put_link(client, pid, url, **kw):
+    return client.put(f"/api/products/{pid}/affiliate-link", json={"url": url}, headers=AUTH, **kw)
+
+
+def test_salvar_link_de_afiliado_aparece_no_produto_na_lista_e_na_mensagem(sessions, db):
+    seed_offers(db)
+    pid = product_id(db)
+
+    with TestClient(make_app(sessions)) as client:
+        saved = put_link(client, pid, f"  {LINK}  ")
+        detail = client.get(f"/api/products/{pid}", headers=AUTH).json()
+        listed = next(i for i in client.get("/api/offers", params=OFFERS, headers=AUTH).json()["items"] if i["id"] == pid)
+
+    assert saved.status_code == 200 and saved.json()["affiliate_url"] == LINK  # aparado
+    assert detail["affiliate_url"] == LINK and detail["affiliate_origin"] == "manual"
+    assert listed["affiliate_url"] == LINK and listed["message"].endswith(f"👉 {LINK}")
+    assert db.scalars(select(Product.affiliate_url).where(Product.id == pid)).one() == LINK
+
+
+@pytest.mark.parametrize(
+    ("url", "trecho"),
+    [
+        ("http://mercadolivre.com/sec/abc", "https"),
+        ("https://exemplo.com/sec/abc", "domínio não permitido"),
+        ("https://mercadolivre.com@evil.com/x", "domínio não permitido"),
+        ("https://mercadolivre.com/a b", "espaços"),
+    ],
+)
+def test_link_invalido_e_recusado_e_nao_e_guardado(sessions, db, url, trecho):
+    seed_offers(db)
+    pid = product_id(db)
+
+    with TestClient(make_app(sessions)) as client:
+        response = put_link(client, pid, url)
+
+    assert response.status_code == 422 and trecho in response.json()["detail"]
+    db.expire_all()
+    assert db.scalars(select(Product.affiliate_url).where(Product.id == pid)).one() is None
+
+
+def test_url_vazia_ou_nula_remove_o_link(sessions, db):
+    seed_offers(db)
+    pid = product_id(db)
+
+    with TestClient(make_app(sessions)) as client:
+        assert put_link(client, pid, LINK).json()["affiliate_url"] == LINK
+        assert put_link(client, pid, "").json()["affiliate_url"] is None
+        assert put_link(client, pid, LINK).status_code == 200
+        assert put_link(client, pid, None).json()["affiliate_url"] is None
+        assert put_link(client, pid, "   ").json()["affiliate_origin"] is None
+
+
+def test_link_de_afiliado_404_e_exige_token(sessions, db):
+    seed_offers(db)
+
+    with TestClient(make_app(sessions)) as client:
+        assert put_link(client, 999999, LINK).status_code == 404
+        assert client.put(f"/api/products/{product_id(db)}/affiliate-link", json={"url": LINK}).status_code == 401
+
+
+def test_modelo_do_ml_monta_o_link_e_o_guardado_vence(sessions, db):
+    seed_offers(db)
+    pid = product_id(db)
+    app = make_app(sessions, ml_affiliate_template="{product_url}?matt_tool=ABC&matt_word=user")
+
+    with TestClient(app) as client:
+        templated = client.get(f"/api/products/{pid}", headers=AUTH).json()
+        put_link(client, pid, LINK)
+        manual = client.get(f"/api/products/{pid}", headers=AUTH).json()
+
+    assert templated["affiliate_url"] == "https://www.mercadolivre.com.br/p/oferta?matt_tool=ABC&matt_word=user"
+    assert templated["affiliate_origin"] == "template" and templated["message"].endswith(templated["affiliate_url"])
+    assert manual["affiliate_url"] == LINK and manual["affiliate_origin"] == "manual"
+
+
+def test_sem_modelo_e_sem_link_o_produto_fica_sem_link_de_afiliado(sessions, db):
+    seed_offers(db)
+
+    with TestClient(make_app(sessions)) as client:
+        body = client.get(f"/api/products/{product_id(db)}", headers=AUTH).json()
+
+    assert body["affiliate_url"] is None and body["affiliate_origin"] is None
+    assert body["message"].endswith("👉 https://exemplo/product:oferta")  # cai no link normal do produto
+
+
+def test_modelo_invalido_falha_na_subida_do_servico(sessions):
+    with pytest.raises(ValueError, match="ML_AFFILIATE_TEMPLATE"):
+        make_app(sessions, ml_affiliate_template="{campo_que_nao_existe}")
