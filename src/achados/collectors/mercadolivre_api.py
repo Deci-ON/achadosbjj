@@ -8,6 +8,7 @@ import httpx
 from achados.collectors.base import BlockedError, CollectorError
 from achados.probes import DbProbeCache, ProbeCache
 from achados.schemas import Offer
+from achados.scoring import normalize
 
 log = logging.getLogger("achados")
 
@@ -46,6 +47,16 @@ BJJ_KEYWORDS = [
 ]
 
 SEARCH_PAGE_SIZE = 50
+
+# Filtro das palavras-chave de /trends (o que as pessoas mais buscam na categoria). A lista vem com
+# marcas úteis (kingz, hayabusa, gracie barra...) e muito ruído (outros esportes, acessórios, lixo).
+BJJ_KEYWORD_ANCHORS = ("jiu jitsu", "jiujitsu", "bjj", "kimono", "quimono", "rash guard", "rashguard", "no gi")
+BJJ_KEYWORD_MARKERS = ("jiu jitsu", "jiujitsu", "bjj")  # citar o esporte salva "kimono judo jiu jitsu"
+BJJ_KEYWORD_OTHER_SPORTS = ("judo", "karate", "taekwondo", "dobok", "muay", "boxe", "kendo", "capoeira")
+BJJ_KEYWORD_REJECT = (
+    "caneca", "boneco", "cabide", "usado", "tatame", "mochila", "bolsa", "chaveiro", "adesivo", "miniatura",
+    "brinquedo", "pelucia",
+)  # fmt: skip
 
 # Esperas (s) entre tentativas quando a API responde 429; o `Retry-After`, se vier, tem prioridade.
 RATE_LIMIT_BACKOFF = (3.0, 10.0, 30.0)
@@ -164,8 +175,13 @@ class MercadoLivreApiCollector:
         delay: float = 0.2,
         sleep: Callable[[float], None] = time.sleep,
         probe_cache: ProbeCache | None = None,
+        trend_categories: list[str] | None = None,
+        trend_limit: int = 30,
     ):
         self._api = api
+        self._trend_categories = trend_categories or []
+        self._trend_limit = trend_limit
+        self.discovered_keywords: list[str] = []  # palavras vindas de /trends na última coleta
         self._probe_cache = probe_cache
         self.skipped_empty = 0  # produtos pulados pelo cache na última coleta
         self._categories = categories if categories is not None else ([] if keywords else list(DEFAULT_CATEGORIES))
@@ -212,7 +228,14 @@ class MercadoLivreApiCollector:
                 product = self._api.get(f"/products/{product_id}")
                 if product:
                     yield product
-        for keyword in self._keywords:
+        self.discovered_keywords = (
+            discover_keywords(self._api, self._trend_categories, known=self._keywords, limit=self._trend_limit)
+            if self._trend_categories
+            else []
+        )
+        if self.discovered_keywords:
+            log.info("trends: %d palavras-chave novas: %s", len(self.discovered_keywords), self.discovered_keywords)
+        for keyword in [*self._keywords, *self.discovered_keywords]:
             yield from self._search(keyword)
 
     def _highlight_ids(self, category: str) -> list[str]:
@@ -250,6 +273,48 @@ class MercadoLivreApiCollector:
         if not items:
             return None
         return best_offer(product, items.get("results", []))
+
+
+def _keyword_ok(normalized: str) -> bool:
+    words = normalized.split()
+    if len(words) < 2 or len(words) > 6 or any(sum(ch.isdigit() for ch in w) >= 3 for w in words):
+        # Uma palavra só ("kimono") traz 150 resultados genéricos, quase todos de judô e caratê;
+        # frases longas e números ("terreno 5x25 plano valor 28 000 00") são lixo.
+        return False
+    if not any(anchor in normalized for anchor in BJJ_KEYWORD_ANCHORS):
+        return False
+    if any(word in normalized for word in BJJ_KEYWORD_REJECT):
+        return False
+    has_marker = any(marker in normalized for marker in BJJ_KEYWORD_MARKERS)
+    return has_marker or not any(sport in normalized for sport in BJJ_KEYWORD_OTHER_SPORTS)
+
+
+def discover_keywords(
+    api: "MercadoLivreAPI", categories: list[str], *, known: list[str] = (), limit: int = 30
+) -> list[str]:
+    """Palavras-chave em alta nas categorias (GET /trends/MLB/{categoria}) que servem ao nicho.
+
+    Mantém a ordem de popularidade, descarta o que já está em `known` e para em `limit`. Um erro no
+    /trends só registra aviso: é enriquecimento, a coleta segue com a lista fixa.
+    """
+    seen = {normalize(k) for k in known}
+    found: list[str] = []
+    for category in categories:
+        try:
+            body = api.get(f"/trends/MLB/{category}")
+        except (BlockedError, httpx.HTTPError) as exc:
+            log.warning("trends %s indisponível (%s); seguindo sem elas", category, type(exc).__name__)
+            continue
+        for entry in body or []:
+            keyword = " ".join(str(entry.get("keyword", "")).split())
+            normalized = normalize(keyword)
+            if normalized in seen or not _keyword_ok(normalized):
+                continue
+            seen.add(normalized)
+            found.append(keyword)
+            if len(found) >= limit:
+                return found
+    return found
 
 
 def _decimal(value) -> Decimal | None:

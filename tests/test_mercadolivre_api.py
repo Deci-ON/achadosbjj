@@ -8,8 +8,11 @@ import pytest
 from achados.collectors.base import BlockedError
 from achados.collectors import mercadolivre_api
 from achados.probes import DbProbeCache
+from achados.scoring import normalize
 from achados.collectors.mercadolivre_api import (
     BJJ_DOMAINS,
+    _keyword_ok,
+    discover_keywords,
     MercadoLivreAPI,
     MercadoLivreApiCollector,
     MercadoLivreAPIError,
@@ -26,6 +29,7 @@ HIGHLIGHTS = fixture("ml_highlights_MLB1051.json")
 PRODUCT = fixture("ml_product.json")
 ITEMS = fixture("ml_product_items.json")
 SEARCH = fixture("ml_products_search.json")
+TRENDS = {cat: fixture(f"ml_trends_{cat}.json") for cat in ("MLB47731", "MLB277803")}
 PRODUCT_ID = PRODUCT["id"]
 # Produtos do fixture de busca que têm ofertas no servidor falso: os 4 uniformes e a faixa.
 SEARCH_WITH_OFFERS = {p["id"] for p in SEARCH["results"] if p["domain_id"] != "MLB-MUGS"}
@@ -42,6 +46,7 @@ class FakeML:
         self.reject_next_with_401 = False
         self.with_offers = {PRODUCT_ID}
         self.search_400_from_offset: int | None = None  # como o ML: offset=200 devolve 400
+        self.trends_status = 200
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -54,6 +59,11 @@ class FakeML:
             return httpx.Response(401, json={"error": "invalid_token"})
         if path.startswith("/highlights/MLB/category/"):
             return httpx.Response(200, json=HIGHLIGHTS)
+        if path.startswith("/trends/MLB/"):
+            data = TRENDS.get(path.rsplit("/", 1)[1])
+            if self.trends_status != 200 or data is None:
+                return httpx.Response(self.trends_status if self.trends_status != 200 else 404)
+            return httpx.Response(200, json=data)
         if path == "/products/search":
             params = request.url.params
             offset, limit = int(params["offset"]), int(params["limit"])
@@ -461,3 +471,102 @@ def test_sem_cache_o_comportamento_nao_muda():
     collector = search_collector(fake, keywords=["kimono"])
 
     assert len(list(collector.collect())) == 5 and collector.skipped_empty == 0
+
+
+# --- palavras-chave de /trends -------------------------------------------
+
+
+def found(*categories, **kw):
+    return discover_keywords(make_api(FakeML()), list(categories), **kw)
+
+
+def test_trends_reais_mantem_marcas_e_descarta_o_ruido():
+    keywords = found("MLB47731", "MLB277803", limit=100)
+
+    # marcas e formas de busca úteis
+    for good in ("kimono feminino jiu jitsu", "kimono kingz", "kimono hayabusa jiu jitsu gi", "kimono atama",
+                 "kimono jiu jitsu gracie barra", "faixa jiu jitsu casca grossa", "faixa preta jiu jitsu", "kimono shoyoroll"):  # fmt: skip
+        assert good in keywords, good
+    # lixo, outros esportes, acessórios e usados
+    for bad in ("terreno 5x25 plano valor 28 000 00", "faixa taekwondo", "faixa karate", "faixa cinza judo",
+                "faixa amarela muay thai", "prajied branco", "kimono usado", "cabide para kimono de jiu jitsu",
+                "faixa azul", "faixa branca", "kimono", "quimono"):  # fmt: skip
+        assert bad not in keywords, bad
+
+
+def test_trends_mantem_a_ordem_de_popularidade_e_respeita_o_limite():
+    keywords = found("MLB47731", limit=3)
+
+    assert keywords == ["kimono feminino jiu jitsu", "kimono jiu jitsu feminino", "kimono jiu jitsu"]
+
+
+def test_trends_nao_repete_o_que_ja_esta_na_lista_fixa_mesmo_com_acento_ou_caixa():
+    keywords = found("MLB47731", known=["Kimono  JIU Jitsu", "kimono atama"], limit=100)
+
+    assert "kimono jiu jitsu" not in keywords and "kimono atama" not in keywords
+    assert "kimono keiko" in keywords
+
+
+def test_trends_sem_duplicata_entre_categorias():
+    keywords = found("MLB47731", "MLB47731", limit=100)
+
+    assert len(keywords) == len({normalize(k) for k in keywords})
+
+
+def test_trends_indisponivel_nao_derruba_a_descoberta():
+    fake = FakeML()
+    fake.trends_status = 403
+    assert discover_keywords(make_api(fake), ["MLB47731"]) == []
+
+    assert found("MLB-INEXISTENTE") == []  # 404: categoria sem tendências
+
+
+def test_filtro_de_palavra_chave():
+    ok = lambda text: _keyword_ok(normalize(text))
+    assert ok("kimono jiu jitsu") and ok("Quimono Atama") and ok("kimono judo jiu jitsu")  # judô só passa com jiu jitsu
+    assert not ok("kimono judo") and not ok("kimono karatê") and not ok("faixa taekwondo")
+    assert not ok("faixa azul")  # sem âncora do nicho
+    assert not ok("kimono") and not ok("quimono")  # palavra solta: só resultado genérico
+    assert not ok("kimono usado") and not ok("caneca kimono jiu jitsu")
+    assert not ok("kimono jiu jitsu a b c d e f g") and not ok("kimono 1234")  # longa; número
+    assert not ok("")
+
+
+def test_coletor_busca_tambem_as_palavras_descobertas_em_trends():
+    fake = FakeML()
+    fake.with_offers = set(SEARCH_WITH_OFFERS)
+    collector = MercadoLivreApiCollector(
+        make_api(fake),
+        keywords=["kimono jiu jitsu"],
+        trend_categories=["MLB47731"],
+        trend_limit=2,
+        sleep=lambda s: None,
+    )
+
+    list(collector.collect())
+
+    queries = [p["q"] for p in fake.search_params]
+    assert collector.discovered_keywords == ["kimono feminino jiu jitsu", "kimono jiu jitsu feminino"]
+    assert queries == ["kimono jiu jitsu", "kimono feminino jiu jitsu", "kimono jiu jitsu feminino"]  # fixa primeiro
+
+
+def test_coletor_segue_com_a_lista_fixa_se_trends_falhar():
+    fake = FakeML()
+    fake.trends_status = 403
+    fake.with_offers = set(SEARCH_WITH_OFFERS)
+    collector = MercadoLivreApiCollector(
+        make_api(fake), keywords=["kimono jiu jitsu"], trend_categories=["MLB47731"], sleep=lambda s: None
+    )
+
+    offers = list(collector.collect())
+
+    assert len(offers) == 5 and collector.discovered_keywords == []
+    assert [p["q"] for p in fake.search_params] == ["kimono jiu jitsu"]
+
+
+def test_sem_categorias_de_trends_nao_chama_o_endpoint():
+    fake = FakeML()
+
+    list(search_collector(fake, keywords=["kimono"]).collect())
+
+    assert not any(c.startswith("/trends") for c in fake.calls)
