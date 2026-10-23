@@ -1,5 +1,6 @@
 import { useState } from "react";
-import type { Status } from "./api";
+import { Link } from "react-router";
+import { ApiError, api, type Offer, type Status } from "./api";
 import { STATUS_HINT, STATUS_STYLE } from "./format";
 
 export function StatusBadge({ status, label }: { status: Status; label: string }) {
@@ -75,4 +76,56 @@ export function Spinner({ label = "Carregando…" }: { label?: string }) {
 
 export function ErrorBox({ message }: { message: string }) {
   return <p className="rounded-md bg-rose-50 p-3 text-sm text-rose-800 ring-1 ring-rose-200">{message}</p>;
+}
+
+/** "Marcar como enviada" / "Desfazer": a oferta enviada sai de "prontas" por 7 dias (ou até o preço cair mais de 3%). */
+export function SentToggle({ offer, onChanged }: { offer: Offer; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const sent = offer.sent_at !== null;
+
+  async function toggle() {
+    setBusy(true);
+    setError("");
+    try {
+      await (sent ? api.unmarkSent(offer.id) : api.markSent(offer.id));
+      onChanged();
+    } catch (exc) {
+      setError(exc instanceof ApiError ? exc.message : "Não consegui salvar.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <span className="inline-flex flex-col">
+      <button
+        type="button"
+        onClick={toggle}
+        disabled={busy}
+        className={`rounded-md px-3 py-1.5 text-sm font-medium ring-1 disabled:opacity-50 ${
+          sent ? "bg-emerald-50 text-emerald-800 ring-emerald-200 hover:bg-emerald-100" : "text-slate-700 ring-slate-300 hover:bg-slate-50"
+        }`}
+        title={sent ? "Clique para desfazer" : "Tira das prontas por 7 dias, a menos que o preço caia mais de 3%"}
+      >
+        {sent ? "Enviada ✓ desfazer" : "Marcar como enviada"}
+      </button>
+      {error && <span className="mt-1 text-xs text-rose-700">{error}</span>}
+    </span>
+  );
+}
+
+/** Aviso de ofertas do ML esperando o link de afiliado. */
+export function PendingLinksBanner({ pending }: { pending: number }) {
+  if (pending <= 0) return null;
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-amber-50 p-3 text-sm text-amber-900 ring-1 ring-amber-200">
+      <span>
+        <b>{pending}</b> {pending === 1 ? "oferta aguarda" : "ofertas aguardam"} o link de afiliado para ficar pronta para enviar.
+      </span>
+      <Link to="/links" className="rounded-md bg-amber-900 px-3 py-1.5 font-medium text-white hover:bg-amber-800">
+        Gerar links
+      </Link>
+    </div>
+  );
 }

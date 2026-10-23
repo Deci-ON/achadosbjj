@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router";
 import { ApiError, api, type OffersResponse, type Status, type StatusResponse } from "../api";
-import { ErrorBox, Spinner } from "../components";
+import { ErrorBox, PendingLinksBanner, Spinner } from "../components";
 import { SOURCE_LABEL, STATUS_HINT, STATUS_LABEL, dateTimeLabel, duration, relative } from "../format";
 
 const STATUSES: Status[] = ["offer", "learning", "no_offer", "irrelevant"];
@@ -18,6 +18,8 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
 export function Dashboard() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [counts, setCounts] = useState<OffersResponse["counts"] | null>(null);
+  const [ready, setReady] = useState(0);
+  const [pendingLinks, setPendingLinks] = useState(0);
   const [error, setError] = useState("");
   const [feedback, setFeedback] = useState("");
 
@@ -26,6 +28,8 @@ export function Dashboard() {
       const [s, o] = await Promise.all([api.status(), api.offers({ status: "offer", limit: 1 })]);
       setStatus(s);
       setCounts(o.counts);
+      setReady(o.ready);
+      setPendingLinks(o.pending_link);
       setError("");
     } catch (exc) {
       setError(exc instanceof ApiError ? exc.message : "Não consegui falar com o servidor.");
@@ -61,6 +65,7 @@ export function Dashboard() {
   return (
     <div className="space-y-4">
       {error && <ErrorBox message={error} />}
+      <PendingLinksBanner pending={pendingLinks} />
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card title="Coleta">
           <p className="text-lg font-semibold">
@@ -115,7 +120,9 @@ export function Dashboard() {
 
         <Card title="Ofertas agora">
           <p className="text-lg font-semibold">{counts?.offer ?? "—"}</p>
-          <p className="text-sm text-slate-600">{counts?.learning ?? 0} ainda aprendendo</p>
+          <p className="text-sm text-slate-600">
+            <b className="text-emerald-700">{ready}</b> prontas para enviar · {counts?.learning ?? 0} aprendendo
+          </p>
           <Link to="/ofertas" className="mt-2 inline-block text-sm font-medium text-slate-900 underline">
             Ver ofertas
           </Link>

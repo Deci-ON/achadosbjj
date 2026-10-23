@@ -3,8 +3,8 @@ import { Link, useParams } from "react-router";
 import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { AffiliateCard } from "../AffiliateCard";
 import { ApiError, api, type ProductDetail } from "../api";
-import { CopyButton, ErrorBox, ScoreBadge, Spinner, StatusBadge } from "../components";
-import { SOURCE_LABEL, STATUS_LABEL, dateTimeLabel, money, parseDate, shortDateLabel } from "../format";
+import { CopyButton, ErrorBox, ScoreBadge, SentToggle, Spinner, StatusBadge } from "../components";
+import { SOURCE_LABEL, STATUS_LABEL, dateTimeLabel, money, parseDate, relative, shortDateLabel } from "../format";
 
 function PriceChart({ product }: { product: ProductDetail }) {
   const data = useMemo(() => {
@@ -62,6 +62,8 @@ export function Product() {
     };
   }, [id]);
 
+  const refresh = () => api.product(Number(id)).then(setProduct).catch(() => setError("Não consegui atualizar o produto."));
+
   if (error) return <ErrorBox message={error} />;
   if (!product) return <Spinner />;
 
@@ -78,6 +80,9 @@ export function Product() {
             <StatusBadge status={product.status} label={STATUS_LABEL[product.status]} />
             <ScoreBadge score={product.score} />
             <span className="text-xs text-slate-500">{SOURCE_LABEL[product.source] ?? product.source}</span>
+            {product.ready && <span className="text-xs font-medium text-emerald-700">pronta para enviar</span>}
+            {product.needs_link && <span className="text-xs font-medium text-amber-700">aguardando link de afiliado</span>}
+            {product.sent_at && <span className="text-xs text-slate-500">enviada {relative(product.sent_at)}</span>}
           </div>
           <h1 className="mt-1 text-lg font-semibold">{product.title}</h1>
           <p className="mt-1">
@@ -110,7 +115,10 @@ export function Product() {
       <section className="rounded-lg bg-white p-4 shadow-sm ring-1 ring-slate-200">
         <div className="mb-2 flex items-center justify-between gap-2">
           <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Mensagem para o WhatsApp</h2>
-          <CopyButton text={product.message} />
+          <span className="flex items-start gap-2">
+            {product.status === "offer" && <SentToggle offer={product} onChanged={refresh} />}
+            <CopyButton text={product.message} />
+          </span>
         </div>
         <pre className="whitespace-pre-wrap rounded-md bg-slate-50 p-3 text-sm ring-1 ring-slate-200">{product.message}</pre>
       </section>

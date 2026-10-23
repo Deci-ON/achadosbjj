@@ -20,6 +20,9 @@ export interface Offer {
   reasons: string[];
   last_seen_at: string;
   message: string;
+  ready: boolean; // oferta com link de afiliado e ainda não enviada
+  needs_link: boolean; // oferta do ML sem link: está na fila
+  sent_at: string | null; // último envio dentro da carência de 7 dias
 }
 
 export interface PricePoint {
@@ -34,7 +37,22 @@ export interface ProductDetail extends Offer {
 
 export interface OffersResponse {
   counts: Record<Status, number>;
+  ready: number;
+  pending_link: number;
   items: Offer[];
+}
+
+export interface PendingItem {
+  id: number;
+  title: string;
+  url: string;
+  price: number;
+  score: number;
+}
+
+export interface PendingResponse {
+  total: number;
+  items: PendingItem[];
 }
 
 export interface Run {
@@ -110,7 +128,7 @@ async function request<T>(path: string, init: RequestInit = {}, token = getToken
 }
 
 export interface OffersQuery {
-  status: Status;
+  status: Status | "ready"; // "ready" = prontas para enviar
   q?: string;
   minScore?: number;
   limit?: number;
@@ -121,7 +139,9 @@ export const api = {
   check: (token: string) => request<StatusResponse>("/api/status", {}, token),
   status: () => request<StatusResponse>("/api/status"),
   offers: ({ status, q, minScore = 0, limit = 60 }: OffersQuery) => {
-    const params = new URLSearchParams({ status, limit: String(limit), min_score: String(minScore) });
+    const params = new URLSearchParams({ limit: String(limit), min_score: String(minScore) });
+    if (status === "ready") params.set("ready", "true");
+    else params.set("status", status);
     if (q?.trim()) params.set("q", q.trim());
     return request<OffersResponse>(`/api/offers?${params}`);
   },
@@ -133,5 +153,15 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url }),
     }),
+  pendingLinks: (limit = 20) => request<PendingResponse>(`/api/affiliate/pending?limit=${limit}`),
+  /** Os links na mesma ordem das URLs coladas no gerador do ML. Tudo ou nada. */
+  saveLinks: (items: { id: number; url: string }[]) =>
+    request<{ saved: number }>("/api/affiliate/links", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items }),
+    }),
+  markSent: (id: number) => request<ProductDetail>(`/api/products/${id}/sent`, { method: "POST" }),
+  unmarkSent: (id: number) => request<ProductDetail>(`/api/products/${id}/sent`, { method: "DELETE" }),
   collect: () => request<{ status: string }>("/api/collect", { method: "POST" }),
 };

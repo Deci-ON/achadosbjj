@@ -2,6 +2,7 @@ import { Suspense, lazy, useEffect, useState } from "react";
 import { BrowserRouter, NavLink, Navigate, Route, Routes } from "react-router";
 import { UNAUTHORIZED_EVENT, getToken, setToken } from "./api";
 import { Dashboard } from "./pages/Dashboard";
+import { Links } from "./pages/Links";
 import { Login } from "./pages/Login";
 import { Offers } from "./pages/Offers";
 import { Spinner } from "./components";
@@ -41,6 +42,9 @@ export default function App() {
           <NavLink to="/ofertas" className={linkClass}>
             Ofertas
           </NavLink>
+          <NavLink to="/links" className={linkClass}>
+            Gerar links
+          </NavLink>
           <button
             type="button"
             onClick={() => (setToken(""), setAuthed(false))}
@@ -54,6 +58,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/ofertas" element={<Offers />} />
+          <Route path="/links" element={<Links />} />
           <Route
             path="/produto/:id"
             element={

@@ -27,8 +27,11 @@ Escuta em `127.0.0.1:8001` do host. Tudo em `/api/*` exige `Authorization: Beare
 |---|---|
 | `GET /health` | público; confere o banco (usado pelo healthcheck do compose) |
 | `GET /api/status` | estado do agendador (líder, rodando, falhas seguidas, próximo horário), produtos por loja, últimas 5 coletas |
-| `GET /api/offers` | produtos pela pontuação por histórico: `status` (`offer` padrão, `no_offer`, `learning`, `irrelevant`), `min_score`, `limit`, `source`, `q` (palavras do título), `max_age_days`, `min_drop`, `min_history`; cada item traz `id`, `affiliate_url` e `message`; devolve também as contagens por situação |
+| `GET /api/offers` | produtos pela pontuação por histórico: `status` (`offer` padrão, `no_offer`, `learning`, `irrelevant`), `min_score`, `limit`, `source`, `q` (palavras do título), `ready=true` (só as prontas para enviar), `max_age_days`, `min_drop`, `min_history`; cada item traz `id`, `affiliate_url`, `message`, `ready`, `needs_link` e `sent_at`; devolve também as contagens por situação e `ready` / `pending_link` |
 | `GET /api/products/{id}` | um produto com veredito, motivos, mensagem para o WhatsApp e histórico de preço (abre também o que não foi visto recentemente) |
+| `GET /api/affiliate/pending` | a fila: ofertas do ML sem link, da melhor para a pior, com as URLs a colar no gerador |
+| `POST /api/affiliate/links` | salva os links do gerador pareados pela ordem; tudo ou nada |
+| `POST /api/products/{id}/sent`, `DELETE …/sent` | marca (ou desfaz) a oferta como enviada |
 | `PUT /api/products/{id}/affiliate-link` | guarda (ou, com url vazia, remove) o link de afiliado do produto; 422 se o domínio não for permitido |
 | `POST /api/collect` | dispara uma coleta agora, em segundo plano (202). 409 se o agendador está desligado, se este worker não é o líder, ou se já há uma coleta |
 
@@ -51,17 +54,24 @@ ssh -L 8001:127.0.0.1:8001 USUARIO@VPS
 
 Para mexer no front: `cd frontend && npm install && npm run dev` (porta 5173, com proxy para a API em 8001). `STATIC_DIR` aponta para a pasta compilada (a imagem já define `/app/static`); sem ele o serviço é só API.
 
-### Link de afiliado
+### Do "virou oferta" ao "pronta para enviar"
 
-O Mercado Livre **não tem API de link de afiliado**, e o link que o gerador devolve não pode ser montado por modelo: o curto (`https://meli.la/<código>`) tem código opaco, e o completo (`/social/<perfil>?matt_word=<etiqueta>&matt_tool=<id>&forceInApp=true&ref=<token>`) leva o produto dentro de um `ref` gerado pelo servidor do ML (verificado gerando links na conta). A Shopee devolve o link pela própria API (`offerLink`, quando houver credenciais). Por isso o link do ML é **colado por produto**:
+1. **O sistema detecta a oferta** (histórico próprio, ver "O que é oferta de verdade") a cada coleta, sozinho.
+2. **Oferta do ML sem link de afiliado entra na fila** (aviso no painel: "N ofertas aguardam o link"). A Shopee traz o link pela API e não entra na fila.
+3. **Você gera os links de um lote de uma vez** (tela "Gerar links", uma colagem por lote de até 20): o painel monta o lote e copia as URLs, você cola no gerador do ML, copia os links curtos de volta, e o painel mostra a tabela produto ↔ link para você conferir antes de salvar.
+4. **A oferta fica "pronta para enviar"** (aba "Prontas para enviar"), com a mensagem do WhatsApp montada e o link de afiliado dentro.
+5. **"Marcar como enviada"** tira a oferta das prontas por 7 dias, a menos que o preço caia mais de 3% desde o envio. "Desfazer" devolve.
 
-1. Na página do produto (card "Link de afiliado"), copie a URL do produto (ela leva o `?wid=` do anúncio mais barato do momento, que o ML respeita).
-2. Abra o gerador do ML (`https://www.mercadolivre.com.br/afiliados/linkbuilder`, "Gerador de produtos recomendados"), cole a URL, clique em Gerar e copie o **link curto**. O gerador aceita várias URLs, uma por linha, mas a ordem das saídas ainda não foi verificada, então o painel não faz colagem em lote.
-3. Cole no card e salve. O link vai na mensagem do WhatsApp e **a coleta não o apaga**.
+**Por que o passo 3 não é automático:** o ML não tem API de link de afiliado, e o gerador do painel chama `POST /affiliate-program/api/v2/affiliates/createLink` junto com **reCAPTCHA Enterprise** e uma verificação de navegador (visto nas requisições da página). Fazer o servidor chamar isso sozinho exigiria contornar detecção de robô, o que não é uma opção (e arriscaria a conta de afiliado). Então a parte sua é uma colagem por lote, não uma por oferta.
 
-Só entram `https` e os domínios do ML e da Shopee (`mercadolivre.com`, `mercadolivre.com.br`, `meli.la`, `shopee.com.br`, `shp.ee`, com subdomínios); qualquer outro é recusado, para não guardar lixo nem um link de golpe que iria parar numa mensagem. `PUT /api/products/{id}/affiliate-link` com `{"url": "..."}` faz o mesmo pela API; url vazia remove. Na lista de ofertas, cada oferta mostra "link de afiliado ✓" ou, só nas ofertas, "sem link de afiliado". Sem link, a mensagem usa o link normal do produto (sem comissão).
+Fatos verificados no gerador (conta real, 2026-10-23):
 
-Dois efeitos do gerador do ML a ter em mente: o link leva ao seu **Perfil Social** (com o produto em destaque e o botão "Ir para produto", e outros produtos logo abaixo), e **cada link gerado entra na sua lista pública "Minhas recomendações"**. O texto do perfil ("Criador de conteúdos automotivos", no caso testado) é o que o comprador vê: vale ajustá-lo em "Editar perfil".
+- O gerador aceita várias URLs, uma por linha, e **devolve os links na mesma ordem** (o código de um produto já gerado voltou na posição certa, e o link do outro abriu o produto esperado). O link de um produto é **estável** (mesmo produto, mesmo código). Por isso o pareamento é por posição, e o servidor ainda recusa o lote inteiro se algo não fechar: link inválido, link repetido (sinal de desalinhamento), produto repetido ou inexistente, ou link que já é de outro produto.
+- O link curto é `https://meli.la/<código>`, opaco; o completo (`/social/<perfil>?matt_word=…&matt_tool=…&ref=<token>`) leva o produto dentro de um `ref` gerado pelo servidor. **Não dá para montar o link por modelo.**
+- O link leva ao seu **Perfil Social** do ML (produto em destaque e botão "Ir para produto"), e **cada link gerado entra na sua lista pública "Minhas recomendações"**. O texto do perfil é o que o comprador vê: vale ajustá-lo em "Editar perfil".
+- O limite de URLs por geração no gerador não foi medido; o painel usa lotes de 20.
+
+Só entram links `https` dos domínios do ML e da Shopee (`mercadolivre.com`, `mercadolivre.com.br`, `meli.la`, `shopee.com.br`, `shp.ee`, com subdomínios). Um link guardado vale por produto e **a coleta nunca o apaga**. Pela API: `GET /api/affiliate/pending` (a fila e as URLs), `POST /api/affiliate/links` (o lote), `PUT /api/products/{id}/affiliate-link` (um só), `POST`/`DELETE /api/products/{id}/sent`. Colado à mão por produto também dá, no card "Link de afiliado" da página do produto.
 
 ### CLI (continua disponível)
 

@@ -1,16 +1,23 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { api, type Offer, type OffersResponse, type Status } from "../api";
-import { CopyButton, ErrorBox, ScoreBadge, Spinner, StatusBadge } from "../components";
-import { STATUS_HINT, STATUS_LABEL, dateTimeLabel, money } from "../format";
+import { CopyButton, ErrorBox, PendingLinksBanner, ScoreBadge, SentToggle, Spinner, StatusBadge } from "../components";
+import { STATUS_HINT, STATUS_LABEL, dateTimeLabel, money, relative } from "../format";
 
-const STATUSES: Status[] = ["offer", "learning", "no_offer", "irrelevant"];
+type Tab = Status | "ready";
 
-function isStatus(value: string | null): value is Status {
-  return STATUSES.includes(value as Status);
+const TABS: Tab[] = ["ready", "offer", "learning", "no_offer", "irrelevant"];
+const TAB_LABEL: Record<Tab, string> = { ready: "Prontas para enviar", ...STATUS_LABEL };
+const TAB_HINT: Record<Tab, string> = {
+  ready: "Oferta de verdade, com link de afiliado e ainda não enviada",
+  ...STATUS_HINT,
+};
+
+function isTab(value: string | null): value is Tab {
+  return TABS.includes(value as Tab);
 }
 
-function OfferCard({ offer }: { offer: Offer }) {
+function OfferCard({ offer, onChanged }: { offer: Offer; onChanged: () => void }) {
   const drop = offer.real_discount_pct ?? 0;
   return (
     <li className="flex gap-3 rounded-lg bg-white p-3 shadow-sm ring-1 ring-slate-200">
@@ -26,8 +33,9 @@ function OfferCard({ offer }: { offer: Offer }) {
           {offer.affiliate_url ? (
             <span className="text-xs text-emerald-700">link de afiliado ✓</span>
           ) : (
-            offer.status === "offer" && <span className="text-xs text-amber-700">sem link de afiliado</span>
+            offer.needs_link && <span className="text-xs text-amber-700">aguardando link de afiliado</span>
           )}
+          {offer.sent_at && <span className="text-xs text-slate-500">enviada {relative(offer.sent_at)}</span>}
         </div>
         <Link to={`/produto/${offer.id}`} className="mt-1 block truncate font-medium hover:underline" title={offer.title}>
           {offer.title}
@@ -48,8 +56,9 @@ function OfferCard({ offer }: { offer: Offer }) {
         <p className="text-xs text-slate-500">
           {offer.reasons[0]} · {offer.observed_days} dias de histórico · visto {dateTimeLabel(offer.last_seen_at)}
         </p>
-        <div className="mt-2 flex flex-wrap gap-2">
+        <div className="mt-2 flex flex-wrap items-start gap-2">
           <CopyButton text={offer.message} />
+          {offer.status === "offer" && <SentToggle offer={offer} onChanged={onChanged} />}
           <a
             href={offer.affiliate_url ?? offer.url}
             target="_blank"
@@ -69,7 +78,7 @@ function OfferCard({ offer }: { offer: Offer }) {
 
 export function Offers() {
   const [params, setParams] = useSearchParams();
-  const status: Status = isStatus(params.get("status")) ? (params.get("status") as Status) : "offer";
+  const tab: Tab = isTab(params.get("status")) ? (params.get("status") as Tab) : "ready";
   const q = params.get("q") ?? "";
   const minScore = Number(params.get("min") ?? 0) || 0;
 
@@ -77,6 +86,7 @@ export function Offers() {
   const [data, setData] = useState<OffersResponse | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [reloadKey, setReloadKey] = useState(0);
 
   function update(next: Record<string, string>) {
     const merged = new URLSearchParams(params);
@@ -98,30 +108,34 @@ export function Offers() {
     let cancelled = false;
     setLoading(true);
     api
-      .offers({ status, q, minScore })
+      .offers({ status: tab, q, minScore })
       .then((body) => !cancelled && (setData(body), setError("")))
       .catch((exc: Error) => !cancelled && setError(exc.message))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [status, q, minScore]);
+  }, [tab, q, minScore, reloadKey]);
+
+  const count = (t: Tab) => (t === "ready" ? data?.ready : data?.counts[t]) ?? "";
 
   return (
     <div className="space-y-4">
+      {data && <PendingLinksBanner pending={data.pending_link} />}
+
       <div className="flex flex-wrap gap-2" role="tablist">
-        {STATUSES.map((s) => (
+        {TABS.map((t) => (
           <button
-            key={s}
+            key={t}
             role="tab"
-            aria-selected={s === status}
-            title={STATUS_HINT[s]}
-            onClick={() => update({ status: s === "offer" ? "" : s })}
+            aria-selected={t === tab}
+            title={TAB_HINT[t]}
+            onClick={() => update({ status: t === "ready" ? "" : t })}
             className={`rounded-full px-3 py-1 text-sm font-medium ring-1 ring-inset ${
-              s === status ? "bg-slate-900 text-white ring-slate-900" : "bg-white text-slate-700 ring-slate-300 hover:bg-slate-50"
+              t === tab ? "bg-slate-900 text-white ring-slate-900" : "bg-white text-slate-700 ring-slate-300 hover:bg-slate-50"
             }`}
           >
-            {STATUS_LABEL[s]} <span className="opacity-70">{data?.counts[s] ?? ""}</span>
+            {TAB_LABEL[t]} <span className="opacity-70">{count(t)}</span>
           </button>
         ))}
       </div>
@@ -155,12 +169,18 @@ export function Offers() {
         <Spinner />
       ) : data && data.items.length === 0 ? (
         <p className="rounded-md bg-white p-6 text-center text-sm text-slate-600 ring-1 ring-slate-200">
-          {status === "offer" && data.counts.learning > 0
-            ? `Nenhuma oferta ainda: ${data.counts.learning} produtos estão aprendendo (precisam de uns 7 dias de histórico).`
-            : "Nada por aqui com esses filtros."}
+          {tab === "ready" && data.pending_link > 0
+            ? `Nenhuma pronta ainda: ${data.pending_link} oferta(s) esperam o link de afiliado (use "Gerar links").`
+            : tab === "ready" && data.counts.learning > 0
+              ? `Nenhuma oferta ainda: ${data.counts.learning} produtos estão aprendendo (precisam de uns 7 dias de histórico).`
+              : tab === "offer" && data.counts.learning > 0
+                ? `Nenhuma oferta ainda: ${data.counts.learning} produtos estão aprendendo (precisam de uns 7 dias de histórico).`
+                : "Nada por aqui com esses filtros."}
         </p>
       ) : (
-        <ul className={`space-y-3 ${loading ? "opacity-60" : ""}`}>{data?.items.map((offer) => <OfferCard key={offer.id} offer={offer} />)}</ul>
+        <ul className={`space-y-3 ${loading ? "opacity-60" : ""}`}>
+          {data?.items.map((offer) => <OfferCard key={offer.id} offer={offer} onChanged={() => setReloadKey((k) => k + 1)} />)}
+        </ul>
       )}
     </div>
   );

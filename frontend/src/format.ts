@@ -17,6 +17,7 @@ export function relative(iso: string | null, now = Date.now()): string {
   if (!iso) return "—";
   const minutes = Math.round((parseDate(iso).getTime() - now) / 60000);
   const abs = Math.abs(minutes);
+  if (abs < 1) return "agora";
   const unit = abs >= 1440 ? `${Math.round(abs / 1440)} d` : abs >= 60 ? `${Math.round(abs / 60)} h` : `${abs} min`;
   return minutes >= 0 ? `em ${unit}` : `há ${unit}`;
 }
