@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
 import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { AffiliateCard } from "../AffiliateCard";
 import { ApiError, api, type ProductDetail } from "../api";
 import { CopyButton, ErrorBox, ScoreBadge, Spinner, StatusBadge } from "../components";
 import { SOURCE_LABEL, STATUS_LABEL, dateTimeLabel, money, parseDate, shortDateLabel } from "../format";
@@ -104,16 +105,14 @@ export function Product() {
         </p>
       </section>
 
+      <AffiliateCard product={product} onChange={setProduct} />
+
       <section className="rounded-lg bg-white p-4 shadow-sm ring-1 ring-slate-200">
         <div className="mb-2 flex items-center justify-between gap-2">
           <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Mensagem para o WhatsApp</h2>
           <CopyButton text={product.message} />
         </div>
         <pre className="whitespace-pre-wrap rounded-md bg-slate-50 p-3 text-sm ring-1 ring-slate-200">{product.message}</pre>
-        <p className="mt-3 text-sm text-slate-600">
-          Link usado: <a className="break-all underline" href={product.affiliate_url ?? product.url} target="_blank" rel="noreferrer">{product.affiliate_url ?? product.url}</a>
-          {!product.affiliate_url && <span className="ml-1 text-amber-700">(ainda sem link de afiliado)</span>}
-        </p>
       </section>
     </div>
   );

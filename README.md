@@ -29,6 +29,7 @@ Escuta em `127.0.0.1:8001` do host. Tudo em `/api/*` exige `Authorization: Beare
 | `GET /api/status` | estado do agendador (líder, rodando, falhas seguidas, próximo horário), produtos por loja, últimas 5 coletas |
 | `GET /api/offers` | produtos pela pontuação por histórico: `status` (`offer` padrão, `no_offer`, `learning`, `irrelevant`), `min_score`, `limit`, `source`, `q` (palavras do título), `max_age_days`, `min_drop`, `min_history`; cada item traz `id`, `affiliate_url` e `message`; devolve também as contagens por situação |
 | `GET /api/products/{id}` | um produto com veredito, motivos, mensagem para o WhatsApp e histórico de preço (abre também o que não foi visto recentemente) |
+| `PUT /api/products/{id}/affiliate-link` | guarda (ou, com url vazia, remove) o link de afiliado do produto; 422 se o domínio não for permitido |
 | `POST /api/collect` | dispara uma coleta agora, em segundo plano (202). 409 se o agendador está desligado, se este worker não é o líder, ou se já há uma coleta |
 
 Configuração (`.env`): `COLLECT_ENABLED` (true), `COLLECT_INTERVAL_SECONDS` (21600), `COLLECT_PRESET` (bjj), `COLLECT_STARTUP_DELAY_SECONDS` (30). Falha de coleta repete em 15 min, 30 min... até o intervalo normal, e fica registrada em `collect_runs` (visível em `/api/status`).
@@ -49,6 +50,14 @@ ssh -L 8001:127.0.0.1:8001 USUARIO@VPS
 ```
 
 Para mexer no front: `cd frontend && npm install && npm run dev` (porta 5173, com proxy para a API em 8001). `STATIC_DIR` aponta para a pasta compilada (a imagem já define `/app/static`); sem ele o serviço é só API.
+
+### Link de afiliado
+
+O Mercado Livre **não tem API de link de afiliado**: o painel do programa (Ferramentas, Gerador de link) gera os links à mão. A Shopee devolve o link pela própria API (`offerLink`, quando houver credenciais). Por isso:
+
+- **Por produto, colado no painel web** (página do produto, card "Link de afiliado"): copie a URL do produto, gere o link curto no painel do ML, cole e salve. O link vai na mensagem do WhatsApp, e **a coleta não o apaga**. Só aceita `https` e os domínios do ML e da Shopee (`mercadolivre.com`, `mercadolivre.com.br`, `meli.la`, `shopee.com.br`, `shp.ee`, com subdomínios); qualquer outro é recusado, para não guardar lixo nem um link de golpe que iria parar numa mensagem. `PUT /api/products/{id}/affiliate-link` com `{"url": "..."}` faz o mesmo pela API; url vazia remove.
+- **Modelo opcional (`ML_AFFILIATE_TEMPLATE`)**, desligado por padrão: monta o link do ML sozinho a partir de `{url}`, `{product_url}`, `{product_id}` e `{item_id}`. O formato dos parâmetros do painel do ML (como `matt_tool` e `matt_word`) só aparece em guias de terceiros, não na documentação oficial, então só preencha depois de ver o que o seu painel gera. O link colado por produto vale mais que o modelo, e um modelo inválido derruba o serviço na subida.
+- Na lista de ofertas, cada oferta mostra "link de afiliado ✓", "link por modelo" ou, só nas ofertas, "sem link de afiliado". Sem link, a mensagem usa o link normal do produto (sem comissão).
 
 ### CLI (continua disponível)
 

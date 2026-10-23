@@ -6,7 +6,8 @@ export interface Offer {
   external_id: string;
   title: string;
   url: string;
-  affiliate_url: string | null;
+  affiliate_url: string | null; // o que vai na mensagem: o guardado ou o montado pelo modelo
+  affiliate_origin: "manual" | "api" | "template" | null;
   image_url: string | null;
   price: number;
   original_price: number | null;
@@ -125,5 +126,12 @@ export const api = {
     return request<OffersResponse>(`/api/offers?${params}`);
   },
   product: (id: number) => request<ProductDetail>(`/api/products/${id}`),
+  /** url vazia remove o link guardado. */
+  setAffiliateLink: (id: number, url: string | null) =>
+    request<ProductDetail>(`/api/products/${id}/affiliate-link`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    }),
   collect: () => request<{ status: string }>("/api/collect", { method: "POST" }),
 };
