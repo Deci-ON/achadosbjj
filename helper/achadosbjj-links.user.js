@@ -10,7 +10,6 @@
 // @grant        GM_registerMenuCommand
 // @connect      localhost
 // @connect      127.0.0.1
-// @connect      achados.tibiascope.com
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -76,7 +75,7 @@ function main() {
   }
 
   function configure() {
-    const base = prompt("Endereço do painel achadosbjj (ex.: http://localhost:8001 ou https://achados.tibiascope.com):", GM_getValue(KEY.base, "http://localhost:8001"));
+    const base = prompt("Endereço do painel achadosbjj (com o túnel SSH aberto: http://localhost:8001):", GM_getValue(KEY.base, "http://localhost:8001"));
     if (base === null) return;
     const token = prompt("ADMIN_TOKEN do painel (fica só no Tampermonkey):", "");
     if (token === null) return;

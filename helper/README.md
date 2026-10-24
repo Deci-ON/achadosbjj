@@ -8,11 +8,9 @@ o script não toca nisso e não envia a sua sessão do ML a ninguém).
 
 1. Instale a extensão [Tampermonkey](https://www.tampermonkey.net/) no navegador onde você está logado no ML.
 2. Tampermonkey > Criar novo script > apague o modelo, cole o conteúdo de `achadosbjj-links.user.js` e salve.
-3. Menu do Tampermonkey > **achadosbjj: configurar painel e token**: informe o endereço do painel e o
-   `ADMIN_TOKEN`. O endereço pode ser:
-   - `http://localhost:8001`, se você abre o painel por túnel SSH (`ssh -L 8001:127.0.0.1:8001 usuario@vps`);
-   - `https://achados.tibiascope.com`, se publicou o subdomínio (ver `deploy/README.md`).
-   Se usar outro endereço, acrescente uma linha `// @connect <host>` no cabeçalho do script.
+3. Menu do Tampermonkey > **achadosbjj: configurar painel e token**: informe `http://localhost:8001` e o
+   `ADMIN_TOKEN`. Isso pede o túnel SSH aberto enquanto você gera os links:
+   `ssh -L 8001:127.0.0.1:8001 usuario@vps`. Para outro endereço, acrescente `// @connect <host>` no cabeçalho.
 
 ## Usar (uns 20 segundos por lote)
 
