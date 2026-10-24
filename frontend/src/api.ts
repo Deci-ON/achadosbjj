@@ -1,5 +1,13 @@
 export type Status = "offer" | "no_offer" | "learning" | "irrelevant";
 
+export interface Variant {
+  id: number;
+  size: string;
+  price: number;
+  status: Status;
+  score: number;
+}
+
 export interface Offer {
   id: number;
   source: string;
@@ -23,6 +31,7 @@ export interface Offer {
   ready: boolean; // oferta com link de afiliado e ainda não enviada
   needs_link: boolean; // oferta do ML sem link: está na fila
   sent_at: string | null; // último envio dentro da carência de 7 dias
+  variants: Variant[]; // os tamanhos do modelo; vazio quando o produto não tem tamanhos
 }
 
 export interface PricePoint {

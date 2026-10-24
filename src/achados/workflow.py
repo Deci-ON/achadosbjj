@@ -61,10 +61,11 @@ def record_send(session: Session, product: Product, now: datetime | None = None)
     return Sent(sent_at, product.price)
 
 
-def undo_send(session: Session, product_id: int) -> bool:
-    """Desfaz o envio mais recente (marcou sem querer)."""
+def undo_send(session: Session, product_id: int | list[int]) -> bool:
+    """Desfaz o envio mais recente (marcou sem querer). Com vários ids, o mais recente entre os tamanhos."""
+    ids = [product_id] if isinstance(product_id, int) else product_id
     last = session.scalars(
-        select(SentOffer).where(SentOffer.product_id == product_id).order_by(SentOffer.sent_at.desc(), SentOffer.id.desc())
+        select(SentOffer).where(SentOffer.product_id.in_(ids)).order_by(SentOffer.sent_at.desc(), SentOffer.id.desc())
     ).first()
     if last is None:
         return False
@@ -76,22 +77,30 @@ def already_sent(product: Product, sent: Sent | None) -> bool:
     return sent is not None and product.price >= sent.price * REPRICE_FACTOR
 
 
-def needs_link(product: Product, verdict: Verdict, min_score: int = 0) -> bool:
+def needs_link(product: Product, verdict: Verdict, min_score: int = 0, *, link: str | None = None) -> bool:
     """Oferta do ML ainda sem link de afiliado e com pontuação para valer a geração (`min_score`).
 
     A Shopee traz o link pela API, então não entra na fila. O corte só decide quem entra na fila: a
     oferta abaixo dele continua sendo oferta e aparece na lista, e dá para colar o link à mão.
+    `link`: o link do modelo quando vem de outro tamanho (ver `variants`); vale como link do produto.
     """
-    return verdict.is_offer and product.source == "mercadolivre" and not product.affiliate_url and verdict.score >= min_score
+    has_link = bool(link or product.affiliate_url)
+    return verdict.is_offer and product.source == "mercadolivre" and not has_link and verdict.score >= min_score
 
 
-def below_cut(product: Product, verdict: Verdict, min_score: int) -> bool:
+def below_cut(product: Product, verdict: Verdict, min_score: int, *, link: str | None = None) -> bool:
     """Oferta do ML sem link que ficou de fora da fila só por causa do corte de pontuação."""
-    return needs_link(product, verdict) and not needs_link(product, verdict, min_score)
+    return needs_link(product, verdict, link=link) and not needs_link(product, verdict, min_score, link=link)
 
 
-def is_ready(product: Product, verdict: Verdict, sent: Sent | None) -> bool:
-    return verdict.is_offer and bool(product.affiliate_url) and not already_sent(product, sent)
+def is_ready(product: Product, verdict: Verdict, sent: Sent | None, *, link: str | None = None) -> bool:
+    return verdict.is_offer and bool(link or product.affiliate_url) and not already_sent(product, sent)
+
+
+def latest_sent(sends: dict[int, Sent], ids: list[int]) -> Sent | None:
+    """O envio mais recente entre os tamanhos de um modelo."""
+    found = [sends[i] for i in ids if i in sends]
+    return max(found, key=lambda s: s.at) if found else None
 
 
 def pair_links(session: Session, pairs: list[tuple[int, str]]) -> int:

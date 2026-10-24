@@ -76,3 +76,57 @@ def test_o_periodo_da_mediana_e_configuravel():
     )
 
     assert "mediana de 14 dias" in message
+
+
+# --- vários tamanhos do mesmo modelo -----------------------------------------
+
+
+def test_varios_tamanhos_com_o_mesmo_preco_listam_os_tamanhos_e_mantem_o_resto():
+    message = format_offer_message(
+        title="Kimono Torah Azul",
+        price=Decimal("250"),
+        link="https://meli.la/AAA",
+        is_offer=True,
+        reference_price=Decimal("500"),
+        real_discount_pct=50,
+        sizes=[("A1", Decimal("250")), ("A2", Decimal("250")), ("A3", Decimal("250"))],
+    )
+
+    assert message == (
+        "🔥 *Kimono Torah Azul*\n\n"
+        "💰 *R$ 250,00*\n"
+        "📉 50% abaixo do preço normal (R$ 500,00, mediana de 30 dias)\n"
+        "📏 Tamanhos: A1, A2, A3\n\n"
+        "👉 https://meli.la/AAA"
+    )
+
+
+def test_tamanhos_com_precos_diferentes_mostram_a_partir_de_e_o_preco_de_cada_um():
+    message = format_offer_message(
+        title="Kimono Torah Azul",
+        price=Decimal("270"),
+        link="https://meli.la/AAA",
+        is_offer=True,
+        reference_price=Decimal("500"),
+        real_discount_pct=46,
+        sizes=[("A1", Decimal("270")), ("A2", Decimal("250"))],
+    )
+
+    assert "💰 *a partir de R$ 250,00*" in message
+    assert "📉 até 46% abaixo do preço normal\n" in message
+    assert "mediana" not in message  # o preço normal é do representante: não vale para todos os tamanhos
+    assert "📏 Tamanhos: A1 R$ 270,00 · A2 R$ 250,00" in message
+
+
+def test_um_tamanho_so_ou_sem_lista_fica_igual_ao_formato_de_sempre():
+    base = dict(
+        title="Kimono Torah Azul",
+        price=Decimal("250"),
+        link="https://meli.la/AAA",
+        is_offer=True,
+        reference_price=Decimal("500"),
+        real_discount_pct=50,
+    )
+
+    assert format_offer_message(**base) == format_offer_message(**base, sizes=[("A1", Decimal("250"))])
+    assert "📏" not in format_offer_message(**base)

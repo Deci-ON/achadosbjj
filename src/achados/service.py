@@ -29,11 +29,13 @@ from achados.messages import format_offer_message
 from achados.offers import assess_product, assess_products
 from achados.scheduler import CollectScheduler, LeaderLock
 from achados.scoring import IRRELEVANT, LEARNING, NO_OFFER, OFFER, ScoringConfig, Verdict, normalize
+from achados.variants import Group, find_siblings, group_models, split_size
 from achados.workflow import (
     MAX_BATCH,
     Sent,
     below_cut,
     is_ready,
+    latest_sent,
     needs_link,
     pair_links,
     recent_sends,
@@ -44,6 +46,16 @@ from achados.workflow import (
 log = logging.getLogger("achados")
 
 STATUSES = (OFFER, NO_OFFER, LEARNING, IRRELEVANT)
+
+
+class VariantOut(BaseModel):
+    """Um tamanho do modelo (ver `variants`)."""
+
+    id: int
+    size: str
+    price: float
+    status: str
+    score: int
 
 
 class OfferOut(BaseModel):
@@ -69,6 +81,7 @@ class OfferOut(BaseModel):
     ready: bool  # oferta com link de afiliado e ainda não enviada: pronta para mandar
     needs_link: bool  # oferta do ML ainda sem link de afiliado e acima do corte: está na fila de links
     sent_at: datetime | None  # último envio dentro da carência de 7 dias
+    variants: list[VariantOut] = []  # os tamanhos do modelo (vazio quando o produto não tem tamanhos)
 
 
 class PricePointOut(BaseModel):
@@ -124,13 +137,18 @@ def offer_out(
     origin: str | None = None,
     sent: Sent | None = None,
     min_link_score: int = 0,
+    group: Group | None = None,
 ) -> OfferOut:
-    link = affiliate_url or product.url
+    """`product`/`verdict` são os campos próprios; com `group` de vários tamanhos, o título, a mensagem, o
+    link e os sinais de fila/pronta são do modelo (do representante), e `variants` traz cada tamanho."""
+    model = group if group is not None and group.is_model else None
+    head, head_verdict = (model.product, model.verdict) if model else (product, verdict)
+    link = affiliate_url or head.url
     return OfferOut(
         id=product.id,
         source=product.source,
         external_id=product.external_id,
-        title=product.title,
+        title=model.title if model else product.title,
         url=product.url,
         affiliate_url=affiliate_url,
         affiliate_origin=origin,
@@ -146,17 +164,24 @@ def offer_out(
         reasons=verdict.reasons,
         last_seen_at=product.last_seen_at,
         message=format_offer_message(
-            title=product.title,
-            price=product.price,
+            title=model.title if model else product.title,
+            price=head.price,
             link=link,
-            is_offer=verdict.is_offer,
-            reference_price=verdict.reference_price,
-            real_discount_pct=verdict.real_discount_pct,
+            is_offer=head_verdict.is_offer,
+            reference_price=head_verdict.reference_price,
+            real_discount_pct=head_verdict.real_discount_pct,
             window_days=ScoringConfig.window_days,
+            sizes=model.offer_sizes() if model else None,
         ),
-        ready=is_ready(product, verdict, sent),
-        needs_link=needs_link(product, verdict, min_link_score),
+        ready=is_ready(head, head_verdict, sent, link=affiliate_url),
+        needs_link=needs_link(head, head_verdict, min_link_score, link=affiliate_url),
         sent_at=sent.at if sent else None,
+        variants=[
+            VariantOut(id=p.id, size=split_size(p.title)[1] or "", price=float(p.price), status=v.status, score=v.score)
+            for p, v in model.sizes()
+        ]
+        if model
+        else [],
     )
 
 
@@ -186,9 +211,11 @@ def create_app(
 
     manual_tasks: set[asyncio.Task] = set()
 
-    def present(product: Product, verdict: Verdict, sent: Sent | None = None) -> OfferOut:
-        link, origin = effective_link(product)
-        return offer_out(product, verdict, link, origin, sent, settings.link_min_score)
+    def present(product: Product, verdict: Verdict, sent: Sent | None = None, group: Group | None = None) -> OfferOut:
+        # O link do modelo vale para todos os tamanhos: pode estar guardado em qualquer um deles.
+        holder = next((p for p, _ in group.members if p.affiliate_url), product) if group else product
+        link, origin = effective_link(holder)
+        return offer_out(product, verdict, link, origin, sent, settings.link_min_score, group)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -276,31 +303,36 @@ def create_app(
         counts = {s: 0 for s in STATUSES}
         items = []
         ready_count = pending_count = cut_count = 0
-        for product, verdict in verdicts:
-            title = normalize(product.title)
-            if words and not all(word in title for word in words):
+        for group in group_models(verdicts):  # um item por modelo: os tamanhos de um kimono entram juntos
+            product, verdict = group.product, group.verdict
+            if words and not any(all(word in normalize(p.title) for word in words) for p, _ in group.members):
                 continue  # a busca vale também para as contagens: elas descrevem o que o filtro mostra
             counts[verdict.status] += 1
-            sent = sends.get(product.id)
-            is_rdy = is_ready(product, verdict, sent)
+            sent = latest_sent(sends, group.ids)
+            is_rdy = is_ready(product, verdict, sent, link=group.link)
             ready_count += is_rdy
-            pending_count += needs_link(product, verdict, settings.link_min_score)
-            cut_count += below_cut(product, verdict, settings.link_min_score)
+            pending_count += needs_link(product, verdict, settings.link_min_score, link=group.link)
+            cut_count += below_cut(product, verdict, settings.link_min_score, link=group.link)
             chosen = is_rdy if ready else verdict.status == status
             if chosen and verdict.score >= min_score and len(items) < limit:
-                items.append(present(product, verdict, sent))
+                items.append(present(product, verdict, sent, group))
         return OffersResponse(counts=counts, ready=ready_count, pending_link=pending_count, below_cut=cut_count, items=items)
 
     @app.get("/api/products/{product_id}", response_model=ProductDetailOut, dependencies=[Depends(require_admin)])
     def product_detail(product_id: int):
         with sessions() as session:
             found = assess_product(session, product_id)
-            sent = recent_sends(session).get(product_id)
-        if found is None:
-            raise HTTPException(404, "produto não encontrado")
-        product, verdict, history = found
+            if found is None:
+                raise HTTPException(404, "produto não encontrado")
+            product, verdict, history = found
+            entries = [(product, verdict)]
+            for sibling in find_siblings(session, product):
+                if sibling.id != product_id and (other := assess_product(session, sibling.id)):
+                    entries.append(other[:2])
+            group = group_models(entries)[0]  # todos têm a mesma chave de modelo: um grupo só
+            sent = latest_sent(recent_sends(session), group.ids)
         return ProductDetailOut(
-            **present(product, verdict, sent).model_dump(),
+            **present(product, verdict, sent, group).model_dump(),
             history=[
                 PricePointOut(price=float(price), original_price=float(original) if original else None, collected_at=at)
                 for price, original, at in history
@@ -327,14 +359,15 @@ def create_app(
         """Ofertas do ML sem link de afiliado acima do corte, da melhor para a pior: as URLs a colar no gerador."""
         with sessions() as session:
             verdicts = assess_products(session)
-        pending = [(p, v) for p, v in verdicts if needs_link(p, v, settings.link_min_score)]
+        groups = group_models(verdicts)  # um link por modelo, não um por tamanho
+        pending = [g for g in groups if needs_link(g.product, g.verdict, settings.link_min_score, link=g.link)]
         return PendingResponse(
             total=len(pending),
             min_score=settings.link_min_score,
-            below_cut=sum(below_cut(p, v, settings.link_min_score) for p, v in verdicts),
+            below_cut=sum(below_cut(g.product, g.verdict, settings.link_min_score, link=g.link) for g in groups),
             items=[
-                PendingItem(id=p.id, title=p.title, url=p.url, price=float(p.price), score=v.score)
-                for p, v in pending[:limit]
+                PendingItem(id=g.product.id, title=g.title, url=g.product.url, price=float(g.product.price), score=g.verdict.score)
+                for g in pending[:limit]
             ],
         )
 
@@ -366,9 +399,10 @@ def create_app(
     def unmark_sent(product_id: int):
         """Desfaz o envio mais recente (marcou sem querer)."""
         with sessions() as session:
-            if session.get(Product, product_id) is None:
+            product = session.get(Product, product_id)
+            if product is None:
                 raise HTTPException(404, "produto não encontrado")
-            undo_send(session, product_id)
+            undo_send(session, [p.id for p in find_siblings(session, product)])  # o envio pode ser de outro tamanho
             session.commit()
         return product_detail(product_id)
 

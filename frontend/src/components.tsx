@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router";
-import { ApiError, api, type Offer, type Status } from "./api";
-import { STATUS_HINT, STATUS_STYLE } from "./format";
+import { ApiError, api, type Offer, type Status, type Variant } from "./api";
+import { STATUS_HINT, STATUS_LABEL, STATUS_STYLE, money } from "./format";
 
 export function StatusBadge({ status, label }: { status: Status; label: string }) {
   return (
@@ -11,6 +11,29 @@ export function StatusBadge({ status, label }: { status: Status; label: string }
     >
       {label}
     </span>
+  );
+}
+
+/** Os tamanhos do modelo: cada um com o próprio preço e situação, e o link para o histórico dele. */
+export function SizeChips({ variants, currentId }: { variants: Variant[]; currentId?: number }) {
+  if (variants.length === 0) return null;
+  return (
+    <ul className="mt-1.5 flex flex-wrap gap-1.5" aria-label="Tamanhos do modelo">
+      {variants.map((v) => (
+        <li key={v.id}>
+          <Link
+            to={`/produto/${v.id}`}
+            title={`${STATUS_LABEL[v.status]} · pontuação ${v.score}`}
+            className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs ring-1 ring-inset hover:opacity-80 ${STATUS_STYLE[v.status]} ${
+              v.id === currentId ? "font-bold outline outline-2 outline-slate-900" : ""
+            }`}
+          >
+            <b>{v.size}</b>
+            <span>{money(v.price)}</span>
+          </Link>
+        </li>
+      ))}
+    </ul>
   );
 }
 

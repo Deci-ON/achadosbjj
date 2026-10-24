@@ -32,18 +32,34 @@ def format_offer_message(
     reference_price: Decimal | float | None = None,
     real_discount_pct: int | None = None,
     window_days: int = 30,
+    sizes: list[tuple[str, Decimal | float]] | None = None,
 ) -> str:
     """Texto pronto para colar no WhatsApp (negrito com *...*).
 
     O preço "de" informado pelo vendedor não entra: ele pode ser inflado. A comparação é com o preço
     normal medido no nosso histórico (mediana de `window_days` dias), e só aparece quando é oferta de verdade.
+
+    `sizes`: (tamanho, preço) dos tamanhos em oferta do mesmo modelo. Com mais de um, a mensagem lista os
+    tamanhos; se os preços diferem, mostra "a partir de" e o preço de cada tamanho, e o desconto vira "até".
     """
     name = clean_title(title)
     if not (is_offer and reference_price and real_discount_pct):
         return f"*{name}*\n\n💰 {brl(price)}\n\n👉 {link}"
-    return (
-        f"🔥 *{name}*\n\n"
-        f"💰 *{brl(price)}*\n"
-        f"📉 {real_discount_pct}% abaixo do preço normal ({brl(reference_price)}, mediana de {window_days} dias)\n\n"
-        f"👉 {link}"
+
+    sizes = sizes or []
+    prices = {Decimal(str(p)) for _, p in sizes}
+    varied = len(sizes) > 1 and len(prices) > 1
+    headline = f"💰 *a partir de {brl(min(prices))}*" if varied else f"💰 *{brl(price)}*"
+    drop = (
+        f"📉 até {real_discount_pct}% abaixo do preço normal"
+        if varied
+        else f"📉 {real_discount_pct}% abaixo do preço normal ({brl(reference_price)}, mediana de {window_days} dias)"
     )
+    if len(sizes) > 1:
+        listing = (
+            " · ".join(f"{size} {brl(p)}" for size, p in sizes) if varied else ", ".join(size for size, _ in sizes)
+        )
+        size_line = f"📏 Tamanhos: {listing}\n"
+    else:
+        size_line = ""
+    return f"🔥 *{name}*\n\n{headline}\n{drop}\n{size_line}\n👉 {link}"

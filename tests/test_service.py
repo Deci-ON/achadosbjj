@@ -69,7 +69,10 @@ def wait_until(predicate, timeout=5.0):
     return False
 
 
-def add_product(db, external_id, title, changes, *, original=None, domain=None):
+def add_product(db, external_id, title, changes, *, original=None, domain=None, seller=None):
+    raw = {"domain_id": domain} if domain else {}
+    if seller is not None:
+        raw["seller_id"] = seller
     product = Product(
         source="mercadolivre",
         external_id=external_id,
@@ -77,7 +80,7 @@ def add_product(db, external_id, title, changes, *, original=None, domain=None):
         url=f"https://exemplo/{external_id}",
         price=Decimal(changes[-1][1]),
         original_price=Decimal(original) if original else None,
-        raw={"domain_id": domain} if domain else {},
+        raw=raw,
         first_seen_at=NOW - timedelta(days=changes[0][0]),
         last_seen_at=NOW,
     )
@@ -631,3 +634,103 @@ def test_a_fila_respeita_o_limite_do_lote(sessions, db):
 
     assert um["total"] == 2 and len(um["items"]) == 1  # total conta tudo, a lista respeita o limite
     assert invalido.status_code == 422
+
+
+# --- tamanhos do mesmo modelo ------------------------------------------------
+
+
+def seed_tamanhos(db):
+    """Um kimono em três tamanhos (A1 e A2 em oferta, A3 sem oferta) + um modelo de outro vendedor."""
+    add_product(db, "product:a1", "Kimono Jiu Jitsu Torah Azul Tamanho A1", [(40, "500"), (3, "250")], seller=7)
+    add_product(db, "product:a2", "Kimono Jiu Jitsu Torah Azul Tamanho A2", [(40, "500"), (3, "270")], seller=7)
+    add_product(db, "product:a3", "Kimono Jiu Jitsu Torah Azul Tamanho A3", [(40, "500")], seller=7)
+    add_product(db, "product:b1", "Kimono Jiu Jitsu Torah Azul Tamanho A1", [(40, "500"), (3, "250")], seller=8)
+
+
+def test_lista_mostra_um_item_por_modelo_e_conta_modelos(sessions, db):
+    seed_tamanhos(db)
+
+    with TestClient(make_app(sessions)) as client:
+        body = get_offers(client)
+
+    assert body["counts"] == {"offer": 2, "no_offer": 0, "learning": 0, "irrelevant": 0}  # 2 modelos, não 4 produtos
+    assert len(body["items"]) == 2
+    modelo = next(i for i in body["items"] if len(i["variants"]) == 3)
+    assert modelo["title"] == "Kimono Jiu Jitsu Torah Azul"  # sem o tamanho
+    assert [(v["size"], v["status"]) for v in modelo["variants"]] == [("A1", "offer"), ("A2", "offer"), ("A3", "no_offer")]
+    assert modelo["id"] == product_id(db, "product:a1")  # o representante é o tamanho de maior score
+    assert "📏 Tamanhos: A1 R$ 250,00 · A2 R$ 270,00" in modelo["message"]  # só os tamanhos em oferta, A3 fora
+    assert "A3" not in modelo["message"]
+    solo = next(i for i in body["items"] if i["variants"] == [])
+    assert solo["title"].endswith("Tamanho A1")  # sem irmãos: título e mensagem como sempre
+
+
+def test_busca_acha_o_modelo_por_qualquer_tamanho(sessions, db):
+    seed_tamanhos(db)
+
+    with TestClient(make_app(sessions)) as client:
+        body = get_offers(client, q="a3")
+
+    assert [len(i["variants"]) for i in body["items"]] == [3]  # o modelo inteiro, não só o A3
+
+
+def test_fila_pede_um_link_por_modelo(sessions, db):
+    seed_tamanhos(db)
+
+    with TestClient(make_app(sessions)) as client:
+        pending = client.get("/api/affiliate/pending", headers=AUTH).json()
+
+    assert pending["total"] == 2
+    assert sorted(i["title"] for i in pending["items"]) == [
+        "Kimono Jiu Jitsu Torah Azul",
+        "Kimono Jiu Jitsu Torah Azul Tamanho A1",
+    ]
+    modelo = next(i for i in pending["items"] if i["title"] == "Kimono Jiu Jitsu Torah Azul")
+    assert modelo["id"] == product_id(db, "product:a1") and modelo["url"] == "https://exemplo/product:a1"
+
+
+def test_link_guardado_em_um_tamanho_deixa_o_modelo_inteiro_pronto(sessions, db):
+    seed_tamanhos(db)
+    a3 = product_id(db, "product:a3")  # o tamanho sem oferta: não é o representante
+
+    with TestClient(make_app(sessions)) as client:
+        assert put_link(client, a3, "https://meli.la/AAA").status_code == 200
+        body = get_offers(client)
+        ready = get_offers(client, ready="true")
+        pending = client.get("/api/affiliate/pending", headers=AUTH).json()
+
+    modelo = next(i for i in body["items"] if len(i["variants"]) == 3)
+    assert modelo["affiliate_url"] == "https://meli.la/AAA" and modelo["ready"] and not modelo["needs_link"]
+    assert modelo["message"].endswith("👉 https://meli.la/AAA")
+    assert [len(i["variants"]) for i in ready["items"]] == [3]
+    assert pending["total"] == 1  # só o modelo do outro vendedor segue na fila
+
+
+def test_detalhe_de_um_tamanho_mostra_os_irmaos_e_o_link_do_modelo(sessions, db):
+    seed_tamanhos(db)
+    a1, a3 = product_id(db, "product:a1"), product_id(db, "product:a3")
+
+    with TestClient(make_app(sessions)) as client:
+        put_link(client, a1, "https://meli.la/AAA")
+        detail = client.get(f"/api/products/{a3}", headers=AUTH).json()
+
+    assert detail["id"] == a3 and detail["status"] == "no_offer" and detail["price"] == 500.0  # os dados são deste tamanho
+    assert [v["size"] for v in detail["variants"]] == ["A1", "A2", "A3"]
+    assert detail["affiliate_url"] == "https://meli.la/AAA"  # o link é do modelo
+    assert len(detail["history"]) == 1
+
+
+def test_marcar_enviada_vale_para_o_modelo_e_desfazer_funciona_por_qualquer_tamanho(sessions, db):
+    seed_tamanhos(db)
+    a1, a2 = product_id(db, "product:a1"), product_id(db, "product:a2")
+
+    with TestClient(make_app(sessions)) as client:
+        put_link(client, a1, "https://meli.la/AAA")
+        assert client.post(f"/api/products/{a1}/sent", headers=AUTH).status_code == 200
+        depois = get_offers(client, ready="true")
+        desfeita = client.delete(f"/api/products/{a2}/sent", headers=AUTH)  # desfaz pelo tamanho irmão
+        de_volta = get_offers(client, ready="true")
+
+    assert depois["items"] == []
+    assert desfeita.status_code == 200 and desfeita.json()["sent_at"] is None
+    assert [len(i["variants"]) for i in de_volta["items"]] == [3]

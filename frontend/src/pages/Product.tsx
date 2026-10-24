@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router";
 import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { AffiliateCard } from "../AffiliateCard";
 import { ApiError, api, type ProductDetail } from "../api";
-import { CopyButton, ErrorBox, ScoreBadge, SentToggle, Spinner, StatusBadge } from "../components";
+import { CopyButton, ErrorBox, ScoreBadge, SentToggle, SizeChips, Spinner, StatusBadge } from "../components";
 import { SOURCE_LABEL, STATUS_LABEL, dateTimeLabel, money, parseDate, relative, shortDateLabel } from "../format";
 
 function PriceChart({ product }: { product: ProductDetail }) {
@@ -100,6 +100,16 @@ export function Product() {
           </ul>
         </div>
       </section>
+
+      {product.variants.length > 0 && (
+        <section className="rounded-lg bg-white p-4 shadow-sm ring-1 ring-slate-200">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Tamanhos deste modelo</h2>
+          <SizeChips variants={product.variants} currentId={product.id} />
+          <p className="mt-2 text-xs text-slate-500">
+            Cada tamanho é um produto do ML, com preço e histórico próprios. O link de afiliado e a mensagem valem para o modelo inteiro: a página do ML deixa o comprador trocar de tamanho.
+          </p>
+        </section>
+      )}
 
       <section className="rounded-lg bg-white p-4 shadow-sm ring-1 ring-slate-200">
         <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Histórico de preço</h2>

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { api, type Offer, type OffersResponse, type Status } from "../api";
-import { CopyButton, ErrorBox, PendingLinksBanner, ScoreBadge, SentToggle, Spinner, StatusBadge } from "../components";
+import { CopyButton, ErrorBox, PendingLinksBanner, ScoreBadge, SentToggle, SizeChips, Spinner, StatusBadge } from "../components";
 import { STATUS_HINT, STATUS_LABEL, dateTimeLabel, money, relative } from "../format";
 
 type Tab = Status | "ready";
@@ -56,6 +56,7 @@ function OfferCard({ offer, onChanged }: { offer: Offer; onChanged: () => void }
         <p className="text-xs text-slate-500">
           {offer.reasons[0]} · {offer.observed_days} dias de histórico · visto {dateTimeLabel(offer.last_seen_at)}
         </p>
+        <SizeChips variants={offer.variants} />
         <div className="mt-2 flex flex-wrap items-start gap-2">
           <CopyButton text={offer.message} />
           {offer.status === "offer" && <SentToggle offer={offer} onChanged={onChanged} />}

@@ -77,6 +77,15 @@ Só entram links `https` dos domínios do ML e da Shopee (`mercadolivre.com`, `m
 
 Gerar link custa um clique seu, então só entra na fila a oferta com pontuação (0 a 100, ver "O que é oferta de verdade") de **`LINK_MIN_SCORE` ou mais (padrão 60)**. A oferta abaixo do corte continua sendo oferta: aparece nas listas, e dá para colar o link à mão na página do produto (aí ela fica pronta). O painel mostra quantas ficaram de fora (`below_cut`). A pontuação é `queda sobre a mediana (até 70 pontos, satura em 40%) + menor preço do período (15) + "de" do vendedor confirmado pelo histórico (10) + profundidade do histórico (até 5)`, então 60 corresponde, na prática, a uma queda de uns 23% (17% se o "de" foi praticado). `LINK_MIN_SCORE=0` enfileira todas as ofertas.
 
+### Tamanhos do mesmo modelo
+
+No catálogo do ML cada tamanho de um kimono é um produto à parte ("... Torah Tamanho A2", "... Preto A3"), com id, anúncio e preço próprios. Na lista, na fila de links e na mensagem eles aparecem como **um modelo só** (mesma loja, mesmo vendedor, mesmo título sem o tamanho; reconhece "Tamanho X" e o código solto no fim, como A0-A6, M0-M6/M00/M000, K0-K6, F0-F6). Na amostra real, 1.024 produtos viraram 684 itens.
+
+- **A pontuação continua por produto:** o preço de um tamanho pode cair sem os outros caírem. O modelo aparece com a situação do melhor tamanho (oferta, depois aprendendo, depois sem oferta; empate pela pontuação e pelo menor preço), e os chips mostram cada tamanho com o próprio preço e situação.
+- **Um link vale o modelo inteiro:** a página do ML mostra o seletor de tamanho com os produtos irmãos. O link pode estar guardado em qualquer tamanho, e a fila pede um link por modelo.
+- **A mensagem lista os tamanhos em oferta.** Com o mesmo preço: `📏 Tamanhos: A1, A2, A3`. Com preços diferentes: `a partir de R$ X`, `até N% abaixo do preço normal` e o preço de cada tamanho.
+- **Marcar como enviada** vale para o modelo, e "Desfazer" funciona a partir de qualquer tamanho. Os títulos que listam vários tamanhos no mesmo anúncio ("A2 E A3") não são agrupados.
+
 ### CLI (continua disponível)
 
 ```bash
