@@ -57,8 +57,8 @@ Para mexer no front: `cd frontend && npm install && npm run dev` (porta 5173, co
 ### Do "virou oferta" ao "pronta para enviar"
 
 1. **O sistema detecta a oferta** (histórico próprio, ver "O que é oferta de verdade") a cada coleta, sozinho.
-2. **Oferta do ML sem link de afiliado entra na fila** (aviso no painel: "N ofertas aguardam o link"). A Shopee traz o link pela API e não entra na fila.
-3. **Você gera os links de um lote de uma vez** (tela "Gerar links", uma colagem por lote de até 20): o painel monta o lote e copia as URLs, você cola no gerador do ML, copia os links curtos de volta, e o painel mostra a tabela produto ↔ link para você conferir antes de salvar.
+2. **Oferta do ML sem link de afiliado e com pontuação suficiente entra na fila** (aviso no painel: "N ofertas aguardam o link"; ver "Corte de pontuação"). A Shopee traz o link pela API e não entra na fila.
+3. **Você gera os links de um lote de uma vez** (tela "Gerar links", uma colagem por lote de até 20): o painel monta o lote e copia as URLs, você cola no gerador do ML, copia os links curtos de volta, e o painel mostra a tabela produto ↔ link para você conferir antes de salvar. Com o [ajudante do navegador](helper/README.md) (Tampermonkey) as colagens somem: ele cola as URLs no gerador e devolve os links ao painel, e você só clica em Gerar e em Salvar.
 4. **A oferta fica "pronta para enviar"** (aba "Prontas para enviar"), com a mensagem do WhatsApp montada e o link de afiliado dentro.
 5. **"Marcar como enviada"** tira a oferta das prontas por 7 dias, a menos que o preço caia mais de 3% desde o envio. "Desfazer" devolve.
 
@@ -72,6 +72,10 @@ Fatos verificados no gerador (conta real, 2026-10-23):
 - O limite de URLs por geração no gerador não foi medido; o painel usa lotes de 20.
 
 Só entram links `https` dos domínios do ML e da Shopee (`mercadolivre.com`, `mercadolivre.com.br`, `meli.la`, `shopee.com.br`, `shp.ee`, com subdomínios). Um link guardado vale por produto e **a coleta nunca o apaga**. Pela API: `GET /api/affiliate/pending` (a fila e as URLs), `POST /api/affiliate/links` (o lote), `PUT /api/products/{id}/affiliate-link` (um só), `POST`/`DELETE /api/products/{id}/sent`. Colado à mão por produto também dá, no card "Link de afiliado" da página do produto.
+
+### Corte de pontuação
+
+Gerar link custa um clique seu, então só entra na fila a oferta com pontuação (0 a 100, ver "O que é oferta de verdade") de **`LINK_MIN_SCORE` ou mais (padrão 60)**. A oferta abaixo do corte continua sendo oferta: aparece nas listas, e dá para colar o link à mão na página do produto (aí ela fica pronta). O painel mostra quantas ficaram de fora (`below_cut`). A pontuação é `queda sobre a mediana (até 70 pontos, satura em 40%) + menor preço do período (15) + "de" do vendedor confirmado pelo histórico (10) + profundidade do histórico (até 5)`, então 60 corresponde, na prática, a uma queda de uns 23% (17% se o "de" foi praticado). `LINK_MIN_SCORE=0` enfileira todas as ofertas.
 
 ### CLI (continua disponível)
 
