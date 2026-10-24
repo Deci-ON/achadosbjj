@@ -228,6 +228,7 @@ def test_offers_sem_produtos_recentes(sessions, db):
         "counts": {"offer": 0, "no_offer": 0, "learning": 0, "irrelevant": 0},
         "ready": 0,
         "pending_link": 0,
+        "below_cut": 0,
         "items": [],
     }
 
@@ -464,6 +465,48 @@ def test_oferta_sem_link_entra_na_fila_e_nao_esta_pronta(sessions, db):
     assert pending["total"] == 2
     assert [i["title"] for i in pending["items"]] == ["Kimono Jiu Jitsu Atama", "Kimono Jiu Jitsu Koral"]  # melhor score primeiro
     assert pending["items"][0]["url"] == "https://exemplo/product:grande"  # a URL que vai ao gerador
+
+
+def test_oferta_abaixo_do_corte_de_score_nao_entra_na_fila(sessions, db):
+    seed_offers(db)  # scores 90 e 82
+    add_product(db, "product:fraca", "Kimono Jiu Jitsu Fraco", [(40, "500"), (3, "400")])  # queda de 20%: score 55
+
+    with TestClient(make_app(sessions)) as client:  # LINK_MIN_SCORE padrão: 60
+        body = get_offers(client)
+        pending = client.get("/api/affiliate/pending", headers=AUTH).json()
+
+    assert body["counts"]["offer"] == 3  # continua sendo oferta e aparece na lista
+    fraca = next(i for i in body["items"] if i["external_id"] == "product:fraca")
+    assert fraca["status"] == "offer" and fraca["score"] < 60
+    assert fraca["needs_link"] is False and fraca["ready"] is False
+    assert body["pending_link"] == 2 and body["below_cut"] == 1
+    assert pending["total"] == 2 and pending["min_score"] == 60 and pending["below_cut"] == 1
+    assert "Kimono Jiu Jitsu Fraco" not in [i["title"] for i in pending["items"]]
+
+
+def test_corte_de_score_vem_da_configuracao(sessions, db):
+    seed_offers(db)
+    add_product(db, "product:fraca", "Kimono Jiu Jitsu Fraco", [(40, "500"), (3, "400")])
+
+    with TestClient(make_app(sessions, link_min_score=0)) as client:
+        todas = client.get("/api/affiliate/pending", headers=AUTH).json()
+    with TestClient(make_app(sessions, link_min_score=85)) as client:
+        so_a_melhor = client.get("/api/affiliate/pending", headers=AUTH).json()
+
+    assert todas["total"] == 3 and todas["below_cut"] == 0
+    assert [i["title"] for i in so_a_melhor["items"]] == ["Kimono Jiu Jitsu Atama"]  # score 90
+    assert so_a_melhor["below_cut"] == 2
+
+
+def test_link_colado_a_mao_numa_oferta_abaixo_do_corte_deixa_ela_pronta(sessions, db):
+    add_product(db, "product:fraca", "Kimono Jiu Jitsu Fraco", [(40, "500"), (3, "400")])
+    pid = pid_of(db, "product:fraca")
+
+    with TestClient(make_app(sessions)) as client:
+        assert put_link(client, pid, LINK).status_code == 200
+        ready = get_offers(client, ready="true")
+
+    assert [i["id"] for i in ready["items"]] == [pid]
 
 
 def test_so_oferta_do_ml_entra_na_fila(sessions, db):

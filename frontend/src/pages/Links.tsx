@@ -107,6 +107,12 @@ export function Links() {
       {pending && pending.total === 0 && batch === null ? (
         <p className="rounded-md bg-white p-6 text-center text-sm text-slate-600 ring-1 ring-slate-200">
           Nenhuma oferta aguarda link agora. Quando o sistema aprender que um produto está em oferta de verdade, ele aparece aqui.
+          {pending.below_cut > 0 && (
+            <>
+              <br />
+              {pending.below_cut} {pending.below_cut === 1 ? "oferta ficou" : "ofertas ficaram"} abaixo do corte de pontuação ({pending.min_score}).
+            </>
+          )}
         </p>
       ) : (
         <>
@@ -121,6 +127,12 @@ export function Links() {
                 <p className="mb-3 text-sm text-slate-600">
                   {pending?.total} {pending?.total === 1 ? "oferta aguarda" : "ofertas aguardam"} link. Cada lote leva até {BATCH_SIZE}, da melhor para a pior.
                 </p>
+                {pending && pending.below_cut > 0 && (
+                  <p className="mb-3 text-xs text-slate-500">
+                    Só entram ofertas com pontuação {pending.min_score} ou mais. {pending.below_cut}{" "}
+                    {pending.below_cut === 1 ? "oferta ficou" : "ofertas ficaram"} de fora: dá para colar o link à mão na página do produto.
+                  </p>
+                )}
                 <button
                   type="button"
                   onClick={startBatch}

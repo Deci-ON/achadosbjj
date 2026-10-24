@@ -29,7 +29,17 @@ from achados.messages import format_offer_message
 from achados.offers import assess_product, assess_products
 from achados.scheduler import CollectScheduler, LeaderLock
 from achados.scoring import IRRELEVANT, LEARNING, NO_OFFER, OFFER, ScoringConfig, Verdict, normalize
-from achados.workflow import MAX_BATCH, Sent, is_ready, needs_link, pair_links, recent_sends, record_send, undo_send
+from achados.workflow import (
+    MAX_BATCH,
+    Sent,
+    below_cut,
+    is_ready,
+    needs_link,
+    pair_links,
+    recent_sends,
+    record_send,
+    undo_send,
+)
 
 log = logging.getLogger("achados")
 
@@ -57,7 +67,7 @@ class OfferOut(BaseModel):
     last_seen_at: datetime
     message: str  # texto pronto para colar no WhatsApp
     ready: bool  # oferta com link de afiliado e ainda não enviada: pronta para mandar
-    needs_link: bool  # oferta do ML ainda sem link de afiliado: está na fila de links
+    needs_link: bool  # oferta do ML ainda sem link de afiliado e acima do corte: está na fila de links
     sent_at: datetime | None  # último envio dentro da carência de 7 dias
 
 
@@ -78,7 +88,8 @@ class AffiliateLinkIn(BaseModel):
 class OffersResponse(BaseModel):
     counts: dict[str, int]
     ready: int  # ofertas prontas para enviar (com o filtro de busca aplicado)
-    pending_link: int  # ofertas do ML aguardando link de afiliado
+    pending_link: int  # ofertas do ML aguardando link de afiliado (já acima do corte de pontuação)
+    below_cut: int  # ofertas do ML sem link que ficaram de fora da fila pelo corte de pontuação
     items: list[OfferOut]
 
 
@@ -92,6 +103,8 @@ class PendingItem(BaseModel):
 
 class PendingResponse(BaseModel):
     total: int
+    min_score: int  # corte de pontuação da fila (LINK_MIN_SCORE)
+    below_cut: int
     items: list[PendingItem]
 
 
@@ -110,6 +123,7 @@ def offer_out(
     affiliate_url: str | None = None,
     origin: str | None = None,
     sent: Sent | None = None,
+    min_link_score: int = 0,
 ) -> OfferOut:
     link = affiliate_url or product.url
     return OfferOut(
@@ -141,7 +155,7 @@ def offer_out(
             window_days=ScoringConfig.window_days,
         ),
         ready=is_ready(product, verdict, sent),
-        needs_link=needs_link(product, verdict),
+        needs_link=needs_link(product, verdict, min_link_score),
         sent_at=sent.at if sent else None,
     )
 
@@ -174,7 +188,7 @@ def create_app(
 
     def present(product: Product, verdict: Verdict, sent: Sent | None = None) -> OfferOut:
         link, origin = effective_link(product)
-        return offer_out(product, verdict, link, origin, sent)
+        return offer_out(product, verdict, link, origin, sent, settings.link_min_score)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -261,7 +275,7 @@ def create_app(
         words = normalize(q).split() if q else []
         counts = {s: 0 for s in STATUSES}
         items = []
-        ready_count = pending_count = 0
+        ready_count = pending_count = cut_count = 0
         for product, verdict in verdicts:
             title = normalize(product.title)
             if words and not all(word in title for word in words):
@@ -270,11 +284,12 @@ def create_app(
             sent = sends.get(product.id)
             is_rdy = is_ready(product, verdict, sent)
             ready_count += is_rdy
-            pending_count += needs_link(product, verdict)
+            pending_count += needs_link(product, verdict, settings.link_min_score)
+            cut_count += below_cut(product, verdict, settings.link_min_score)
             chosen = is_rdy if ready else verdict.status == status
             if chosen and verdict.score >= min_score and len(items) < limit:
                 items.append(present(product, verdict, sent))
-        return OffersResponse(counts=counts, ready=ready_count, pending_link=pending_count, items=items)
+        return OffersResponse(counts=counts, ready=ready_count, pending_link=pending_count, below_cut=cut_count, items=items)
 
     @app.get("/api/products/{product_id}", response_model=ProductDetailOut, dependencies=[Depends(require_admin)])
     def product_detail(product_id: int):
@@ -309,12 +324,14 @@ def create_app(
 
     @app.get("/api/affiliate/pending", response_model=PendingResponse, dependencies=[Depends(require_admin)])
     def affiliate_pending(limit: int = Query(20, ge=1, le=MAX_BATCH)):
-        """Ofertas do ML sem link de afiliado, da melhor para a pior: as URLs a colar no gerador do ML."""
+        """Ofertas do ML sem link de afiliado acima do corte, da melhor para a pior: as URLs a colar no gerador."""
         with sessions() as session:
             verdicts = assess_products(session)
-        pending = [(p, v) for p, v in verdicts if needs_link(p, v)]
+        pending = [(p, v) for p, v in verdicts if needs_link(p, v, settings.link_min_score)]
         return PendingResponse(
             total=len(pending),
+            min_score=settings.link_min_score,
+            below_cut=sum(below_cut(p, v, settings.link_min_score) for p, v in verdicts),
             items=[
                 PendingItem(id=p.id, title=p.title, url=p.url, price=float(p.price), score=v.score)
                 for p, v in pending[:limit]

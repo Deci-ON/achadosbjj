@@ -9,6 +9,7 @@ from achados.scoring import LEARNING, NO_OFFER, OFFER, Verdict
 from achados.workflow import (
     MAX_BATCH,
     already_sent,
+    below_cut,
     is_ready,
     needs_link,
     pair_links,
@@ -51,6 +52,20 @@ def test_so_oferta_do_ml_sem_link_entra_na_fila(db):
     assert needs_link(shopee, verdict()) is False  # a Shopee traz o link pela API
     assert needs_link(sem_link, verdict(LEARNING)) is False  # ainda não é oferta
     assert needs_link(sem_link, verdict(NO_OFFER)) is False
+
+
+def test_corte_de_score_decide_quem_entra_na_fila(db):
+    sem_link = make(db, "a")
+    com_link = make(db, "b", affiliate_url="https://meli.la/x")
+    fraca = Verdict(status=OFFER, score=55)
+
+    assert needs_link(sem_link, fraca) is True  # sem corte (padrão 0) entra
+    assert needs_link(sem_link, fraca, 60) is False
+    assert needs_link(sem_link, Verdict(status=OFFER, score=60), 60) is True  # o corte é inclusivo
+    assert below_cut(sem_link, fraca, 60) is True
+    assert below_cut(sem_link, verdict(), 60) is False  # score 80: entra na fila
+    assert below_cut(com_link, fraca, 60) is False  # já tem link: não é fila nem "abaixo do corte"
+    assert below_cut(sem_link, Verdict(status=NO_OFFER, score=10), 60) is False  # nem é oferta
 
 
 def test_pronta_e_oferta_com_link_que_nao_foi_enviada_agora(db):

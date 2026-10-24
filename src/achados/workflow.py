@@ -1,7 +1,8 @@
 """Do "virou oferta" ao "pronta para enviar".
 
 1. O produto vira oferta (histórico próprio, ver `scoring`).
-2. Oferta do ML sem link de afiliado entra na fila de links pendentes (`needs_link`).
+2. Oferta do ML sem link de afiliado e com pontuação >= `LINK_MIN_SCORE` entra na fila de links pendentes
+   (`needs_link`); as abaixo do corte seguem como oferta, só não entram na fila (`below_cut`).
 3. Com o link guardado, a oferta fica pronta para enviar (`is_ready`), com a mensagem montada.
 4. Ao marcar como enviada, não volta à lista por 7 dias, a menos que o preço caia mais de 3%.
 
@@ -75,9 +76,18 @@ def already_sent(product: Product, sent: Sent | None) -> bool:
     return sent is not None and product.price >= sent.price * REPRICE_FACTOR
 
 
-def needs_link(product: Product, verdict: Verdict) -> bool:
-    """Oferta do ML ainda sem link de afiliado. A Shopee traz o link pela API, então não entra na fila."""
-    return verdict.is_offer and product.source == "mercadolivre" and not product.affiliate_url
+def needs_link(product: Product, verdict: Verdict, min_score: int = 0) -> bool:
+    """Oferta do ML ainda sem link de afiliado e com pontuação para valer a geração (`min_score`).
+
+    A Shopee traz o link pela API, então não entra na fila. O corte só decide quem entra na fila: a
+    oferta abaixo dele continua sendo oferta e aparece na lista, e dá para colar o link à mão.
+    """
+    return verdict.is_offer and product.source == "mercadolivre" and not product.affiliate_url and verdict.score >= min_score
+
+
+def below_cut(product: Product, verdict: Verdict, min_score: int) -> bool:
+    """Oferta do ML sem link que ficou de fora da fila só por causa do corte de pontuação."""
+    return needs_link(product, verdict) and not needs_link(product, verdict, min_score)
 
 
 def is_ready(product: Product, verdict: Verdict, sent: Sent | None) -> bool:

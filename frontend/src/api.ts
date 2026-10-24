@@ -39,6 +39,7 @@ export interface OffersResponse {
   counts: Record<Status, number>;
   ready: number;
   pending_link: number;
+  below_cut: number; // ofertas do ML sem link que ficaram de fora da fila pelo corte de pontuação
   items: Offer[];
 }
 
@@ -52,6 +53,8 @@ export interface PendingItem {
 
 export interface PendingResponse {
   total: number;
+  min_score: number; // corte de pontuação da fila (LINK_MIN_SCORE)
+  below_cut: number;
   items: PendingItem[];
 }
 

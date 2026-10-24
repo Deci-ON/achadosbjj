@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     collect_startup_delay_seconds: float = 30.0
     collect_preset: str = "bjj"
     static_dir: str = ""  # pasta do front compilado (Vite); vazia = só a API
+    # Só ofertas do ML com pontuação >= isto entram na fila de links (a geração do link é um clique seu).
+    # 60 ~ queda de uns 23% sobre a mediana (17% se o "de" do vendedor foi praticado); 0 = todas as ofertas.
+    link_min_score: int = 60
     admin_token: str = ""  # sem ele, os endpoints /api/* respondem 503 (nunca ficam abertos por esquecimento)
 
 
