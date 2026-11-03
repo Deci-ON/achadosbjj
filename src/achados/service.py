@@ -13,21 +13,38 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime
 
+import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from achados.affiliate import effective_link, validate_affiliate_url
-from achados.collectors.mercadolivre_api import PRESETS, build_collector
+from achados.collectors.mercadolivre_api import PRESETS, MercadoLivreAPI, build_collector
 from achados.config import Settings, get_settings
 from achados.db import make_engine, make_session_factory
 from achados.frontend import mount_frontend
 from achados.logs import configure_logging
-from achados.models import Base, CollectRun, Product
+from achados.models import Base, CollectRun, Product, SendJob
 from achados.messages import format_offer_message
 from achados.offers import assess_product, assess_products
 from achados.scheduler import CollectScheduler, LeaderLock
+from achados.sender import (
+    SENDER_LOCK_KEY,
+    MlPriceChecker,
+    SenderClient,
+    SenderError,
+    SendWorker,
+    cancel_job,
+    enqueue_offer,
+    is_paused,
+    pause_reason,
+    replace_groups,
+    saved_groups,
+    sent_today,
+    set_paused,
+    utcnow,
+)
 from achados.scoring import IRRELEVANT, LEARNING, NO_OFFER, OFFER, ScoringConfig, Verdict, normalize
 from achados.variants import Group, find_siblings, group_models, split_size
 from achados.workflow import (
@@ -121,6 +138,15 @@ class PendingResponse(BaseModel):
     items: list[PendingItem]
 
 
+class GroupIn(BaseModel):
+    id: str
+    name: str = ""
+
+
+class GroupsIn(BaseModel):
+    groups: list[GroupIn]  # os grupos que recebem as ofertas; o que não estiver aqui sai da lista
+
+
 class BulkLinkItem(BaseModel):
     id: int
     url: str
@@ -190,6 +216,8 @@ def create_app(
     *,
     sessions: sessionmaker[Session] | None = None,
     scheduler: CollectScheduler | None = None,
+    sender_client: SenderClient | None = None,
+    send_worker: SendWorker | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(settings.log_level)
@@ -209,6 +237,24 @@ def create_app(
             enabled=settings.collect_enabled,
         )
 
+    if sender_client is None and settings.sender_url:
+        sender_client = SenderClient(settings.sender_url, settings.sender_token)
+    if send_worker is None:
+        checker = None
+        if settings.ml_client_id and settings.ml_client_secret:
+            http = httpx.Client(timeout=settings.request_timeout, proxy=settings.ml_proxy_url)
+            checker = MlPriceChecker(MercadoLivreAPI(settings.ml_client_id, settings.ml_client_secret, http=http))
+        send_worker = SendWorker(
+            sessions,
+            LeaderLock(engine, SENDER_LOCK_KEY),
+            sender_client,
+            daily_cap=settings.sender_daily_cap,
+            min_delay=settings.sender_min_delay_seconds,
+            max_delay=settings.sender_max_delay_seconds,
+            window=(settings.sender_window_start_hour, settings.sender_window_end_hour),
+            checker=checker,
+        )
+
     manual_tasks: set[asyncio.Task] = set()
 
     def present(product: Product, verdict: Verdict, sent: Sent | None = None, group: Group | None = None) -> OfferOut:
@@ -223,12 +269,15 @@ def create_app(
         if not settings.admin_token:
             log.warning("ADMIN_TOKEN não definido: os endpoints /api/* responderão 503")
         loop_task = asyncio.create_task(scheduler.run(), name="collect-scheduler")
+        send_task = asyncio.create_task(send_worker.run(), name="send-worker")
         try:
             yield
         finally:
-            loop_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await loop_task
+            for task in (loop_task, send_task):
+                task.cancel()
+            for task in (loop_task, send_task):
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
 
     app = FastAPI(title="achadosbjj", lifespan=lifespan)
 
@@ -405,6 +454,119 @@ def create_app(
             undo_send(session, [p.id for p in find_siblings(session, product)])  # o envio pode ser de outro tamanho
             session.commit()
         return product_detail(product_id)
+
+    # --- envio ao WhatsApp (robô próprio; ver achados.sender) ---------------------
+
+    def require_sender() -> SenderClient:
+        if sender_client is None:
+            raise HTTPException(409, "envio automático desligado (SENDER_URL vazio)")
+        return sender_client
+
+    @app.get("/api/sender", dependencies=[Depends(require_admin)])
+    def sender_overview():
+        connection = {"state": "off", "qr": None}
+        if sender_client is not None:
+            try:
+                connection = sender_client.status()
+            except SenderError as exc:
+                connection = {"state": "unreachable", "qr": None, "error": str(exc)}
+        with sessions() as session:
+            queued = session.scalar(select(func.count()).select_from(SendJob).where(SendJob.status == "queued")) or 0
+            return {
+                "configured": sender_client is not None,
+                "connection": connection,
+                "paused": is_paused(session),
+                "pause_reason": pause_reason(session),
+                "daily_cap": settings.sender_daily_cap,
+                "sent_today": sent_today(session, utcnow()),
+                "queued": queued,
+                "window": [settings.sender_window_start_hour, settings.sender_window_end_hour],
+                "groups": [{"id": g.chat_id, "name": g.name} for g in saved_groups(session)],
+                "worker": {
+                    "is_leader": send_worker.state.is_leader,
+                    "last_error": send_worker.state.last_error,
+                    "next_send_at": send_worker.state.next_send_at,
+                },
+            }
+
+    @app.get("/api/sender/groups", dependencies=[Depends(require_admin)])
+    def sender_groups():
+        """Os grupos do número conectado, marcando os que já recebem ofertas."""
+        client = require_sender()
+        try:
+            live = client.groups()
+        except SenderError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        with sessions() as session:
+            selected = {g.chat_id for g in saved_groups(session)}
+        return [{**g, "selected": g["id"] in selected} for g in live]
+
+    @app.put("/api/sender/groups", dependencies=[Depends(require_admin)])
+    def sender_set_groups(body: GroupsIn):
+        require_sender()
+        with sessions() as session:
+            replace_groups(session, [(g.id, g.name) for g in body.groups])
+            session.commit()
+        return {"groups": len(body.groups)}
+
+    @app.post("/api/sender/pause", dependencies=[Depends(require_admin)])
+    def sender_pause():
+        with sessions() as session:
+            set_paused(session, True, "pausado no painel")
+            session.commit()
+        return {"paused": True}
+
+    @app.post("/api/sender/resume", dependencies=[Depends(require_admin)])
+    def sender_resume():
+        send_worker.state.consecutive_failures = 0
+        with sessions() as session:
+            set_paused(session, False)
+            session.commit()
+        return {"paused": False}
+
+    @app.get("/api/sender/jobs", dependencies=[Depends(require_admin)])
+    def sender_jobs(limit: int = Query(50, ge=1, le=200)):
+        with sessions() as session:
+            jobs = session.scalars(select(SendJob).order_by(SendJob.id.desc()).limit(limit)).all()
+            return [
+                {
+                    "id": j.id,
+                    "product_id": j.product_id,
+                    "group": j.group_name or j.chat_id,
+                    "status": j.status,
+                    "price": float(j.price),
+                    "attempts": j.attempts,
+                    "error": j.error,
+                    "created_at": j.created_at,
+                    "sent_at": j.sent_at,
+                    "text": j.text,
+                }
+                for j in jobs
+            ]
+
+    @app.delete("/api/sender/jobs/{job_id}", dependencies=[Depends(require_admin)])
+    def sender_cancel_job(job_id: int):
+        with sessions() as session:
+            if not cancel_job(session, job_id):
+                raise HTTPException(404, "job não encontrado ou já processado")
+            session.commit()
+        return {"cancelled": job_id}
+
+    @app.post("/api/products/{product_id}/send", dependencies=[Depends(require_admin)])
+    def send_offer(product_id: int):
+        """Põe a oferta pronta na fila do robô, para cada grupo escolhido. O robô manda com intervalo e confere o preço."""
+        require_sender()
+        detail = product_detail(product_id)
+        if not detail.ready:
+            raise HTTPException(409, "a oferta não está pronta: sem link de afiliado, já enviada ou deixou de ser oferta")
+        with sessions() as session:
+            product = session.get(Product, product_id)
+            try:
+                queued = enqueue_offer(session, product, detail.message, detail.image_url)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            session.commit()
+        return {"queued": queued}
 
     @app.post("/api/collect", status_code=202, dependencies=[Depends(require_admin)])
     async def collect():

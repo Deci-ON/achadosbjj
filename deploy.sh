@@ -4,7 +4,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 git pull --ff-only
-docker compose up -d --build db app
+# O robô de envio só entra com COMPOSE_PROFILES=sender no .env (o `config --services` já respeita isso).
+SENDER=$(docker compose config --services | grep -x sender || true)
+docker compose up -d --build db app $SENDER
 
 echo "aguardando o serviço ficar saudável..."
 for _ in $(seq 1 30); do

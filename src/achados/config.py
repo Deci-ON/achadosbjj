@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     # Só ofertas do ML com pontuação >= isto entram na fila de links (a geração do link é um clique seu).
     # 60 ~ queda de uns 23% sobre a mediana (17% se o "de" do vendedor foi praticado); 0 = todas as ofertas.
     link_min_score: int = 60
+    # Robô de envio ao WhatsApp (sidecar `sender/`, whatsapp-web.js). Vazio = desligado: só copiar e colar.
+    sender_url: str = ""  # ex.: http://sender:3000
+    sender_token: str = ""
+    sender_daily_cap: int = 30  # mensagens por dia (cada grupo conta uma)
+    sender_min_delay_seconds: float = 60.0  # intervalo aleatório entre duas mensagens
+    sender_max_delay_seconds: float = 180.0
+    sender_window_start_hour: int = 8  # só envia nesta janela (horário de Brasília)
+    sender_window_end_hour: int = 22
     admin_token: str = ""  # sem ele, os endpoints /api/* respondem 503 (nunca ficam abertos por esquecimento)
 
 

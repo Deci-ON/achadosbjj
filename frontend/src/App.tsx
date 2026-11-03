@@ -5,6 +5,7 @@ import { Dashboard } from "./pages/Dashboard";
 import { Links } from "./pages/Links";
 import { Login } from "./pages/Login";
 import { Offers } from "./pages/Offers";
+import { Sender } from "./pages/Sender";
 import { Spinner } from "./components";
 
 // A página de produto carrega o Recharts (a maior parte do JavaScript): só baixa quando alguém abre um produto.
@@ -45,6 +46,9 @@ export default function App() {
           <NavLink to="/links" className={linkClass}>
             Gerar links
           </NavLink>
+          <NavLink to="/envio" className={linkClass}>
+            Envio
+          </NavLink>
           <button
             type="button"
             onClick={() => (setToken(""), setAuthed(false))}
@@ -59,6 +63,7 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/ofertas" element={<Offers />} />
           <Route path="/links" element={<Links />} />
+          <Route path="/envio" element={<Sender />} />
           <Route
             path="/produto/:id"
             element={

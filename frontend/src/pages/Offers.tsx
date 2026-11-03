@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { api, type Offer, type OffersResponse, type Status } from "../api";
-import { CopyButton, ErrorBox, PendingLinksBanner, ScoreBadge, SentToggle, SizeChips, Spinner, StatusBadge } from "../components";
+import { CopyButton, ErrorBox, PendingLinksBanner, ScoreBadge, SendToBotButton, SentToggle, SizeChips, Spinner, StatusBadge } from "../components";
 import { STATUS_HINT, STATUS_LABEL, dateTimeLabel, money, relative } from "../format";
 
 type Tab = Status | "ready";
@@ -17,7 +17,7 @@ function isTab(value: string | null): value is Tab {
   return TABS.includes(value as Tab);
 }
 
-function OfferCard({ offer, onChanged }: { offer: Offer; onChanged: () => void }) {
+function OfferCard({ offer, canSend, onChanged }: { offer: Offer; canSend: boolean; onChanged: () => void }) {
   const drop = offer.real_discount_pct ?? 0;
   return (
     <li className="flex gap-3 rounded-lg bg-white p-3 shadow-sm ring-1 ring-slate-200">
@@ -58,6 +58,7 @@ function OfferCard({ offer, onChanged }: { offer: Offer; onChanged: () => void }
         </p>
         <SizeChips variants={offer.variants} />
         <div className="mt-2 flex flex-wrap items-start gap-2">
+          {canSend && offer.ready && <SendToBotButton offer={offer} onChanged={onChanged} />}
           <CopyButton text={offer.message} />
           {offer.status === "offer" && <SentToggle offer={offer} onChanged={onChanged} />}
           <a
@@ -88,6 +89,14 @@ export function Offers() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
+  const [canSend, setCanSend] = useState(false); // robô de envio configurado (SENDER_URL)
+
+  useEffect(() => {
+    api
+      .sender()
+      .then((s) => setCanSend(s.configured))
+      .catch(() => setCanSend(false));
+  }, []);
 
   function update(next: Record<string, string>) {
     const merged = new URLSearchParams(params);
@@ -180,7 +189,7 @@ export function Offers() {
         </p>
       ) : (
         <ul className={`space-y-3 ${loading ? "opacity-60" : ""}`}>
-          {data?.items.map((offer) => <OfferCard key={offer.id} offer={offer} onChanged={() => setReloadKey((k) => k + 1)} />)}
+          {data?.items.map((offer) => <OfferCard key={offer.id} offer={offer} canSend={canSend} onChanged={() => setReloadKey((k) => k + 1)} />)}
         </ul>
       )}
     </div>

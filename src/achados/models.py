@@ -93,3 +93,41 @@ class SentOffer(Base):
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"))
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     price: Mapped[Decimal] = mapped_column(Numeric(12, 2))  # o preço no momento do envio
+
+
+class SendGroup(Base):
+    """Um grupo do WhatsApp (id do wwebjs) que recebe as ofertas enviadas pelo robô."""
+
+    __tablename__ = "send_groups"
+
+    chat_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(Text, default="")
+
+
+class SendJob(Base):
+    """Uma mensagem na fila do robô: uma oferta para um grupo. O texto é congelado ao entrar na fila."""
+
+    __tablename__ = "send_jobs"
+    __table_args__ = (Index("ix_send_jobs_status_created", "status", "created_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"))
+    chat_id: Mapped[str] = mapped_column(String(64))
+    group_name: Mapped[str] = mapped_column(Text, default="")
+    text: Mapped[str] = mapped_column(Text)
+    image_url: Mapped[str | None] = mapped_column(Text)
+    price: Mapped[Decimal] = mapped_column(Numeric(12, 2))  # preço ao entrar na fila; o robô confere de novo antes de enviar
+    status: Mapped[str] = mapped_column(String(16), default="queued")  # queued | sent | failed | cancelled
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SenderSetting(Base):
+    """Chave/valor do robô de envio (ex.: `paused`), para sobreviver a reinício."""
+
+    __tablename__ = "sender_settings"
+
+    key: Mapped[str] = mapped_column(String(32), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")

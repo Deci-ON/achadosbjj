@@ -91,6 +91,39 @@ export interface StatusResponse {
   recent_runs: Run[];
 }
 
+export interface SenderOverview {
+  configured: boolean; // SENDER_URL definido
+  connection: { state: string; qr: string | null; error?: string }; // state: off | unreachable | starting | qr | authenticated | ready | disconnected
+  paused: boolean;
+  pause_reason: string;
+  daily_cap: number;
+  sent_today: number;
+  queued: number;
+  window: [number, number]; // janela de envio (horário de Brasília)
+  groups: { id: string; name: string }[]; // os grupos que recebem as ofertas
+  worker: { is_leader: boolean; last_error: string | null; next_send_at: string | null };
+}
+
+export interface SenderGroup {
+  id: string;
+  name: string;
+  participants: number;
+  selected: boolean;
+}
+
+export interface SenderJob {
+  id: number;
+  product_id: number;
+  group: string;
+  status: "queued" | "sent" | "failed" | "cancelled";
+  price: number;
+  attempts: number;
+  error: string | null;
+  created_at: string;
+  sent_at: string | null;
+  text: string;
+}
+
 const TOKEN_KEY = "achadosbjj.token";
 
 // localStorage pode lançar (janela privada, dados bloqueados): o painel funciona sem ele, só pede o token de novo.
@@ -176,4 +209,18 @@ export const api = {
   markSent: (id: number) => request<ProductDetail>(`/api/products/${id}/sent`, { method: "POST" }),
   unmarkSent: (id: number) => request<ProductDetail>(`/api/products/${id}/sent`, { method: "DELETE" }),
   collect: () => request<{ status: string }>("/api/collect", { method: "POST" }),
+  sender: () => request<SenderOverview>("/api/sender"),
+  senderGroups: () => request<SenderGroup[]>("/api/sender/groups"),
+  setSenderGroups: (groups: { id: string; name: string }[]) =>
+    request<{ groups: number }>("/api/sender/groups", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ groups }),
+    }),
+  pauseSender: () => request<{ paused: boolean }>("/api/sender/pause", { method: "POST" }),
+  resumeSender: () => request<{ paused: boolean }>("/api/sender/resume", { method: "POST" }),
+  senderJobs: () => request<SenderJob[]>("/api/sender/jobs"),
+  cancelSenderJob: (id: number) => request<{ cancelled: number }>(`/api/sender/jobs/${id}`, { method: "DELETE" }),
+  /** Põe a oferta pronta na fila do robô (um job por grupo escolhido). */
+  sendOffer: (id: number) => request<{ queued: number }>(`/api/products/${id}/send`, { method: "POST" }),
 };

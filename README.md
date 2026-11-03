@@ -86,6 +86,26 @@ No catálogo do ML cada tamanho de um kimono é um produto à parte ("... Torah 
 - **A mensagem lista os tamanhos em oferta.** Com o mesmo preço: `📏 Tamanhos: A1, A2, A3`. Com preços diferentes: `a partir de R$ X`, `até N% abaixo do preço normal` e o preço de cada tamanho.
 - **Marcar como enviada** vale para o modelo, e "Desfazer" funciona a partir de qualquer tamanho. Os títulos que listam vários tamanhos no mesmo anúncio ("A2 E A3") não são agrupados.
 
+### Envio automático ao WhatsApp (opcional)
+
+Sem isto, o fluxo é "Copiar mensagem" e colar. Com o robô (`sender/`, [whatsapp-web.js](https://wwebjs.dev/)), o painel manda a oferta pronta para os grupos que você escolher.
+
+**Leia antes de ligar.** O robô é um WhatsApp Web automatizado, um cliente não oficial: o WhatsApp não permite isso, e o número pode ser **banido**. Use um número **dedicado** (chip ou eSIM novo, nunca o seu pessoal), esquente-o por algumas semanas com conversa normal, e só ponha em grupos de gente que pediu para estar (denúncias de spam derrubam o número). O número do robô tem de estar nos grupos, de preferência como admin.
+
+O que o código faz para reduzir o risco (e não elimina): só envia o que você aprovou com "Enviar aos grupos" (a fila nunca se enche sozinha), intervalo aleatório entre mensagens (`SENDER_MIN/MAX_DELAY_SECONDS`), limite por dia (`SENDER_DAILY_CAP`, cada grupo conta uma) e janela de horário de Brasília, pausa sozinho depois de 3 falhas seguidas, e **confere o preço no ML logo antes de mandar**: cancela se subiu mais de 3% ou se o anúncio sumiu.
+
+Ligar na VPS:
+
+```bash
+# no .env: COMPOSE_PROFILES=sender, SENDER_URL=http://sender:3000, SENDER_TOKEN=<token novo>
+./deploy.sh                      # sobe também o contêiner `sender` (limitado a 768 MB e 0,75 CPU)
+docker compose logs -f sender    # confira que subiu
+```
+
+Depois, no painel, aba **Envio**: leia o QR code com o WhatsApp do número do robô, escolha os grupos e use "Enviar aos grupos" nas ofertas prontas. A sessão fica no volume `senderdata` (reiniciar não pede QR de novo). O `sender` não publica porta: só o `app` fala com ele. Se o número for banido, tire o `COMPOSE_PROFILES=sender` e volte ao copiar e colar.
+
+O Chromium do robô usa memória e CPU: meça com `docker stats` antes de deixar ligado (a VPS divide recursos com o tibiascope).
+
 ### CLI (continua disponível)
 
 ```bash

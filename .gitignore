@@ -7,3 +7,4 @@ __pycache__/
 # Front-end (frontend/): dependências e build saem do Docker, não do git
 frontend/node_modules/
 frontend/dist/
+sender/node_modules/

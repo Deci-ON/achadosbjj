@@ -138,6 +138,41 @@ export function SentToggle({ offer, onChanged }: { offer: Offer; onChanged: () =
   );
 }
 
+/** "Enviar aos grupos": põe a oferta na fila do robô, que manda com intervalo e confere o preço antes. */
+export function SendToBotButton({ offer, onChanged }: { offer: Offer; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+
+  async function send() {
+    setBusy(true);
+    setMessage("");
+    try {
+      const { queued } = await api.sendOffer(offer.id);
+      setMessage(`Na fila: ${queued} ${queued === 1 ? "grupo" : "grupos"}`);
+      onChanged();
+    } catch (exc) {
+      setMessage(exc instanceof ApiError ? exc.message : "Não consegui enfileirar.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <span className="inline-flex flex-col">
+      <button
+        type="button"
+        onClick={send}
+        disabled={busy}
+        title="O robô manda para os grupos escolhidos na aba Envio, com intervalo entre mensagens"
+        className="rounded-md bg-emerald-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-600 disabled:opacity-50"
+      >
+        Enviar aos grupos
+      </button>
+      {message && <span className="mt-1 text-xs text-slate-600">{message}</span>}
+    </span>
+  );
+}
+
 /** Aviso de ofertas do ML esperando o link de afiliado. */
 export function PendingLinksBanner({ pending }: { pending: number }) {
   if (pending <= 0) return null;

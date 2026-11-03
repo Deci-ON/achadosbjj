@@ -44,5 +44,28 @@ services:
     # prazo o Docker mata o contêiner, e o próximo start fecha a coleta interrompida como erro.
     stop_grace_period: 20s
 
+  # Robô de envio ao WhatsApp (whatsapp-web.js + Chromium). Opcional: só sobe com COMPOSE_PROFILES=sender
+  # no .env (e SENDER_URL=http://sender:3000, SENDER_TOKEN=...). Sem `ports:`: só o `app` fala com ele; o QR
+  # code aparece no painel (aba Envio). O número é dedicado ao robô, nunca o seu pessoal (ver README).
+  sender:
+    build: ./sender
+    profiles: ["sender"]
+    restart: unless-stopped
+    environment:
+      SENDER_TOKEN: ${SENDER_TOKEN:?defina SENDER_TOKEN no .env}
+    volumes:
+      - senderdata:/data # a sessão do WhatsApp: sem ele o QR seria pedido a cada reinício
+    shm_size: 256m
+    # A VPS é limitada e divide com o tibiascope: o Chromium não passa disto.
+    mem_limit: 768m
+    cpus: 0.75
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
 volumes:
   pgdata:
+  senderdata:
