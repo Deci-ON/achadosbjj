@@ -16,7 +16,7 @@ from achados.service import create_app
 
 TOKEN = "segredo-de-teste"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
-NOW = datetime(2026, 10, 23, 12, 0, tzinfo=timezone.utc)
+NOW = datetime.now(timezone.utc).replace(microsecond=0)  # relativo ao relógio: /api/affiliate/pending corta produtos com mais de 3 dias
 
 
 class FakeLock:
@@ -222,7 +222,10 @@ def test_offers_valida_os_parametros(sessions):
 
 
 def test_offers_sem_produtos_recentes(sessions, db):
-    seed_offers(db)  # last_seen_at fixo em 2026-10-23: fora da janela padrão de 3 dias, hoje
+    seed_offers(db)
+    for product in db.scalars(select(Product)):
+        product.last_seen_at = NOW - timedelta(days=10)  # fora da janela padrão de 3 dias
+    db.commit()
 
     with TestClient(make_app(sessions)) as client:
         body = client.get("/api/offers", params={"max_age_days": 0.001}, headers=AUTH).json()

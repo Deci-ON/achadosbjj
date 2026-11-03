@@ -190,6 +190,28 @@ def test_best_offer_ignora_usados_e_sem_preco():
     assert offer.raw["item_id"] == "MLB2" and offer.raw["offers_count"] == 2
 
 
+def test_anuncio_de_preco_isca_nao_vira_o_preco_do_produto():
+    # Caso real (2026-11-03): seis vendedores entre R$ 769 e R$ 933 e um a R$ 100.
+    new = lambda item_id, price, seller: {"item_id": item_id, "price": price, "condition": "new", "seller_id": seller}
+    results = [new("MLB-ISCA", 100, 3805017481), new("MLB1", 769.9, 1), new("MLB2", 799, 2), new("MLB3", 859.95, 3), new("MLB4", 933.23, 4)]
+
+    offer = best_offer(PRODUCT, results)
+
+    assert offer.price == Decimal("769.9") and offer.raw["item_id"] == "MLB1"
+    assert offer.raw["offers_count"] == 4
+    assert offer.raw["ignored_low_prices"] == [{"item_id": "MLB-ISCA", "price": "100", "seller_id": 3805017481}]
+
+
+def test_desconto_real_de_um_anuncio_so_passa_com_concorrentes_proximos():
+    new = lambda item_id, price: {"item_id": item_id, "price": price, "condition": "new"}
+
+    # Queda de 30% entre os concorrentes: é oferta, não isca.
+    assert best_offer(PRODUCT, [new("MLB1", 70), new("MLB2", 100), new("MLB3", 105)]).price == Decimal("70")
+    # Com um concorrente só não há referência para chamar o menor de isca.
+    assert best_offer(PRODUCT, [new("MLB1", 100), new("MLB2", 1000)]).price == Decimal("100")
+    assert "ignored_low_prices" not in best_offer(PRODUCT, [new("MLB1", 100), new("MLB2", 120)]).raw
+
+
 def test_best_offer_sem_candidatas():
     assert best_offer(PRODUCT, []) is None
     assert best_offer(PRODUCT, [{"item_id": "MLB3", "price": 10, "condition": "used"}]) is None

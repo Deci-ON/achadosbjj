@@ -347,6 +347,25 @@ def _discount(price: Decimal, original: Decimal | None) -> int | None:
     return None
 
 
+# Um anúncio muito abaixo do resto do catálogo quase nunca é oferta: é preço de isca ou erro do vendedor
+# (medido em 2026-11-03: kimono Atama Mundial 10, seis vendedores entre R$ 769 e R$ 933 e um a R$ 100 que a
+# página do ML não mostrava). Só vale com 2+ concorrentes, para a mediana deles ser uma referência.
+OUTLIER_RATIO = Decimal("0.5")
+OUTLIER_MIN_OTHERS = 2
+
+
+def drop_price_outliers(candidates: list[tuple[Decimal, dict]]) -> tuple[list[tuple[Decimal, dict]], list[tuple[Decimal, dict]]]:
+    """Separa os anúncios com menos da metade da mediana dos demais. Devolve (mantidos, descartados)."""
+    kept, dropped = [], []
+    for index, candidate in enumerate(candidates):
+        others = sorted(p for i, (p, _) in enumerate(candidates) if i != index)
+        if len(others) >= OUTLIER_MIN_OTHERS and candidate[0] < others[len(others) // 2] * OUTLIER_RATIO:
+            dropped.append(candidate)
+        else:
+            kept.append(candidate)
+    return kept, dropped
+
+
 def best_offer(product: dict, results: list[dict]) -> Offer | None:
     """Resume o produto pela oferta nova de menor preço (empate: a primeira da lista).
 
@@ -362,9 +381,11 @@ def best_offer(product: dict, results: list[dict]) -> Offer | None:
     if not candidates:
         return None
 
+    candidates, outliers = drop_price_outliers(candidates)
     price, result = min(candidates, key=lambda c: c[0])
     original = _decimal(result.get("original_price"))
     pictures = product.get("pictures") or []
+    ignored = [{"item_id": r["item_id"], "price": str(p), "seller_id": r.get("seller_id")} for p, r in outliers]
     return Offer(
         source="mercadolivre",
         external_id=f"product:{product['id']}",
@@ -381,6 +402,7 @@ def best_offer(product: dict, results: list[dict]) -> Offer | None:
             "seller_id": result.get("seller_id"),
             "offers_count": len(candidates),
             "offer": result,
+            **({"ignored_low_prices": ignored} if ignored else {}),
         },
     )
 
