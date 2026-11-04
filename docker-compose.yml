@@ -52,7 +52,9 @@ services:
     profiles: ["sender"]
     restart: unless-stopped
     environment:
-      SENDER_TOKEN: ${SENDER_TOKEN:?defina SENDER_TOKEN no .env}
+      # Vazio de propósito: o compose interpola isto mesmo com o perfil desligado, e `:?` quebraria todo
+      # `up`/`config`. O robô recusa subir sem token (sender/index.js).
+      SENDER_TOKEN: ${SENDER_TOKEN:-}
     volumes:
       - senderdata:/data # a sessão do WhatsApp: sem ele o QR seria pedido a cada reinício
     shm_size: 256m
