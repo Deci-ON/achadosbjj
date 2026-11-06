@@ -212,6 +212,78 @@ def test_desconto_real_de_um_anuncio_so_passa_com_concorrentes_proximos():
     assert "ignored_low_prices" not in best_offer(PRODUCT, [new("MLB1", 100), new("MLB2", 120)]).raw
 
 
+class FakeTrust:
+    def __init__(self, trusted: set):
+        self._trusted = trusted
+
+    def trusted(self, seller_id) -> bool:
+        return seller_id in self._trusted
+
+
+def test_vendedor_sem_reputacao_nao_entra_no_preco_mesmo_sem_concorrentes_para_comparar():
+    # Caso real (2026-11-06): kimono Atama com 1 concorrente a R$ 549,90 e a isca de R$ 120 (4 vendas, sem nível).
+    # O filtro de preço precisa de 2+ concorrentes e não pegava; a reputação do vendedor pega.
+    new = lambda item_id, price, seller: {"item_id": item_id, "price": price, "condition": "new", "seller_id": seller}
+    results = [new("MLB-OK", 549.9, 1), new("MLB-ISCA", 120, 1155666595)]
+
+    offer = best_offer(PRODUCT, results, FakeTrust({1}))
+
+    assert offer.price == Decimal("549.9") and offer.raw["item_id"] == "MLB-OK"
+    assert offer.raw["untrusted_sellers"] == [{"item_id": "MLB-ISCA", "price": "120", "seller_id": 1155666595}]
+
+
+def test_produto_so_com_vendedor_sem_reputacao_nao_tem_oferta():
+    results = [{"item_id": "MLB-ISCA", "price": 120, "condition": "new", "seller_id": 1155666595}]
+
+    assert best_offer(PRODUCT, results, FakeTrust(set())) is None
+    assert best_offer(PRODUCT, results).price == Decimal("120")  # sem `trust`, o comportamento antigo
+
+
+def users_api(levels: dict, calls: list | None = None, fail: set = frozenset()):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/oauth/token":
+            return httpx.Response(200, json={"access_token": "t", "expires_in": 3600})
+        seller_id = int(request.url.path.rsplit("/", 1)[1])
+        if calls is not None:
+            calls.append(seller_id)
+        if seller_id in fail:
+            return httpx.Response(403)
+        return httpx.Response(200, json={"id": seller_id, "seller_reputation": {"level_id": levels.get(seller_id)}})
+
+    return make_api(handler)
+
+
+def test_seller_trust_so_confia_em_nivel_amarelo_ou_melhor():
+    levels = {1: "5_green", 2: "4_light_green", 3: "3_yellow", 4: "2_orange", 5: "1_red", 6: None}
+    trust = mercadolivre_api.SellerTrust(users_api(levels), cache={})
+
+    assert [trust.trusted(i) for i in (1, 2, 3, 4, 5, 6, 99)] == [True, True, True, False, False, False, False]
+    assert trust.trusted(None) is False and trust.trusted(0) is False
+
+
+def test_seller_trust_guarda_a_resposta_por_12_horas():
+    calls: list[int] = []
+    now = [0.0]
+    trust = mercadolivre_api.SellerTrust(users_api({1: "5_green"}, calls), clock=lambda: now[0], cache={})
+
+    trust.trusted(1)
+    trust.trusted(1)
+    assert calls == [1]
+
+    now[0] = mercadolivre_api.TRUST_TTL_SECONDS + 1
+    trust.trusted(1)
+    assert calls == [1, 1]
+
+
+def test_seller_trust_com_falha_na_consulta_desconfia_e_nao_guarda_a_falha():
+    calls: list[int] = []
+    trust = mercadolivre_api.SellerTrust(users_api({1: "5_green"}, calls, fail={1}), cache={})
+
+    assert trust.trusted(1) is False
+    assert trust.trusted(1) is False
+    assert calls == [1, 1]  # a falha não ficou no cache: a próxima rodada tenta de novo
+
+
 def test_best_offer_sem_candidatas():
     assert best_offer(PRODUCT, []) is None
     assert best_offer(PRODUCT, [{"item_id": "MLB3", "price": 10, "condition": "used"}]) is None

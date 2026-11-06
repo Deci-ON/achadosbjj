@@ -194,8 +194,10 @@ class MercadoLivreApiCollector:
         probe_cache: ProbeCache | None = None,
         trend_categories: list[str] | None = None,
         trend_limit: int = 30,
+        seller_trust: "SellerTrust | None" = None,
     ):
         self._api = api
+        self._seller_trust = seller_trust
         self._trend_categories = trend_categories or []
         self._trend_limit = trend_limit
         self.discovered_keywords: list[str] = []  # palavras vindas de /trends na última coleta
@@ -289,7 +291,7 @@ class MercadoLivreApiCollector:
         items = self._api.get(f"/products/{product['id']}/items")
         if not items:
             return None
-        return best_offer(product, items.get("results", []))
+        return best_offer(product, items.get("results", []), self._seller_trust)
 
 
 def _keyword_ok(normalized: str) -> bool:
@@ -347,6 +349,47 @@ def _discount(price: Decimal, original: Decimal | None) -> int | None:
     return None
 
 
+# Reputação do vendedor (GET /users/{id}, abre com o token do app). Medido em 2026-11-06 no kimono Atama:
+# as iscas (R$ 100 e R$ 120 num kimono de R$ 770) vinham de vendedores sem nível ou `1_red`, com 4 a 43 vendas;
+# os vendedores normais eram `5_green` (ouro/prata) com centenas a milhares de vendas. Só entram no preço do
+# produto os vendedores com nível amarelo ou melhor. Vendedor novo e honesto fica de fora até ganhar nível:
+# é o preço de segurança, porque a oferta vai parar na frente de um grupo de gente.
+TRUSTED_LEVELS = frozenset({"3_yellow", "4_light_green", "5_green"})
+TRUST_TTL_SECONDS = 12 * 3600
+
+
+class SellerTrust:
+    """Diz se o vendedor merece entrar no preço. Guarda a resposta por 12 h, e o cache vale por processo.
+
+    Se a consulta falha (rede, 429, 403), o vendedor conta como não confiável nesta rodada e a falha não
+    fica no cache: o preço some por um ciclo em vez de uma isca passar.
+    """
+
+    _cache: dict[int, tuple[bool, float]] = {}
+
+    def __init__(self, api: "MercadoLivreAPI", clock: Callable[[], float] = time.monotonic, cache: dict | None = None):
+        self._api = api
+        self._clock = clock
+        if cache is not None:
+            self._cache = cache
+
+    def trusted(self, seller_id) -> bool:
+        if not seller_id:
+            return False
+        cached = self._cache.get(seller_id)
+        if cached and cached[1] > self._clock():
+            return cached[0]
+        try:
+            user = self._api.get(f"/users/{seller_id}")
+        except (BlockedError, httpx.HTTPError) as exc:
+            log.warning("reputação do vendedor %s indisponível (%s): tratado como não confiável", seller_id, type(exc).__name__)
+            return False
+        level = ((user or {}).get("seller_reputation") or {}).get("level_id")
+        ok = level in TRUSTED_LEVELS
+        self._cache[seller_id] = (ok, self._clock() + TRUST_TTL_SECONDS)
+        return ok
+
+
 # Um anúncio muito abaixo do resto do catálogo quase nunca é oferta: é preço de isca ou erro do vendedor
 # (medido em 2026-11-03: kimono Atama Mundial 10, seis vendedores entre R$ 769 e R$ 933 e um a R$ 100 que a
 # página do ML não mostrava). Só vale com 2+ concorrentes, para a mediana deles ser uma referência.
@@ -366,11 +409,14 @@ def drop_price_outliers(candidates: list[tuple[Decimal, dict]]) -> tuple[list[tu
     return kept, dropped
 
 
-def best_offer(product: dict, results: list[dict]) -> Offer | None:
+def best_offer(product: dict, results: list[dict], trust: "SellerTrust | None" = None) -> Offer | None:
     """Resume o produto pela oferta nova de menor preço (empate: a primeira da lista).
 
     `external_id` é o produto, não o anúncio: o anúncio mais barato pode trocar de vendedor
     entre coletas sem quebrar o histórico. O link aponta para o anúncio mais barato do momento.
+
+    Com `trust`, só contam os anúncios de vendedores confiáveis (ver `SellerTrust`); se nenhum
+    sobra, o produto não tem oferta. Depois, o filtro de preço de isca (`drop_price_outliers`).
     """
     candidates = []
     for result in results:
@@ -378,6 +424,11 @@ def best_offer(product: dict, results: list[dict]) -> Offer | None:
         if price is None or not result.get("item_id") or result.get("condition") != "new":
             continue
         candidates.append((price, result))
+
+    untrusted: list[tuple[Decimal, dict]] = []
+    if trust is not None:
+        untrusted = [c for c in candidates if not trust.trusted(c[1].get("seller_id"))]
+        candidates = [c for c in candidates if c not in untrusted]
     if not candidates:
         return None
 
@@ -386,6 +437,7 @@ def best_offer(product: dict, results: list[dict]) -> Offer | None:
     original = _decimal(result.get("original_price"))
     pictures = product.get("pictures") or []
     ignored = [{"item_id": r["item_id"], "price": str(p), "seller_id": r.get("seller_id")} for p, r in outliers]
+    skipped = [{"item_id": r["item_id"], "price": str(p), "seller_id": r.get("seller_id")} for p, r in untrusted]
     return Offer(
         source="mercadolivre",
         external_id=f"product:{product['id']}",
@@ -403,6 +455,7 @@ def best_offer(product: dict, results: list[dict]) -> Offer | None:
             "offers_count": len(candidates),
             "offer": result,
             **({"ignored_low_prices": ignored} if ignored else {}),
+            **({"untrusted_sellers": skipped} if skipped else {}),
         },
     )
 
@@ -427,4 +480,5 @@ def build_collector(settings, preset: str, sessions=None) -> MercadoLivreApiColl
         probe_cache=DbProbeCache(sessions) if sessions is not None else None,
         trend_categories=BJJ_CATEGORIES,
         trend_limit=BJJ_TREND_LIMIT,
+        seller_trust=SellerTrust(api),
     )

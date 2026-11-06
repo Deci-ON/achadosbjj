@@ -25,7 +25,7 @@ import httpx
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
-from achados.collectors.mercadolivre_api import MercadoLivreAPI, best_offer
+from achados.collectors.mercadolivre_api import MercadoLivreAPI, SellerTrust, best_offer
 from achados.models import Product, SendGroup, SendJob, SenderSetting
 from achados.scheduler import LeaderLock
 from achados.workflow import record_send
@@ -108,13 +108,16 @@ class MlPriceChecker:
 
     def __init__(self, api: MercadoLivreAPI):
         self._api = api
+        self._trust = SellerTrust(api)  # a mesma regra do coletor: vendedor sem reputação não dá preço
 
     def current_price(self, product: Product) -> Decimal | None:
         product_id = (product.raw or {}).get("product_id")
         if not product_id:
             return product.price  # sem como conferir: vale o que foi coletado
         body = self._api.get(f"/products/{product_id}/items")
-        offer = best_offer({"id": product_id, "name": product.title}, (body or {}).get("results", [])) if body else None
+        offer = (
+            best_offer({"id": product_id, "name": product.title}, (body or {}).get("results", []), self._trust) if body else None
+        )
         return offer.price if offer else None
 
 
