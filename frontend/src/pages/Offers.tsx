@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { ApiError, api, type Coupon, type Offer, type OffersResponse, type Status } from "../api";
 import { CopyButton, ErrorBox, PendingLinksBanner, ScoreBadge, SendToBotButton, SentToggle, SizeChips, Spinner, StatusBadge } from "../components";
-import { COUPON_KIND_LABEL, SOURCE_LABEL, STATUS_HINT, STATUS_LABEL, dateLabel, dateTimeLabel, money, relative } from "../format";
+import { COUPON_KIND_LABEL, SOURCE_LABEL, SOURCE_STYLE, STATUS_HINT, STATUS_LABEL, dateLabel, dateTimeLabel, money, relative } from "../format";
 
 type Tab = Status | "ready";
 
@@ -82,7 +82,9 @@ function CouponPicker({ offer, coupons, onChanged }: { offer: Offer; coupons: Co
 function OfferCard({ offer, canSend, coupons, onChanged }: { offer: Offer; canSend: boolean; coupons: Coupon[]; onChanged: () => void }) {
   const drop = offer.real_discount_pct ?? 0;
   return (
-    <li className="flex gap-3 rounded-lg bg-white p-3 shadow-sm ring-1 ring-slate-200">
+    <li
+      className={`flex gap-3 rounded-lg border-l-4 bg-white p-3 shadow-sm ring-1 ring-slate-200 ${SOURCE_STYLE[offer.source]?.border ?? "border-l-slate-300"}`}
+    >
       {offer.image_url ? (
         <img src={offer.image_url} alt="" loading="lazy" className="size-20 shrink-0 rounded-md object-contain" />
       ) : (
@@ -92,7 +94,9 @@ function OfferCard({ offer, canSend, coupons, onChanged }: { offer: Offer; canSe
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={offer.status} label={STATUS_LABEL[offer.status]} />
           <ScoreBadge score={offer.score} />
-          <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium text-slate-600 ring-1 ring-inset ring-slate-300">
+          <span
+            className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ring-inset ${SOURCE_STYLE[offer.source]?.badge ?? "text-slate-600 ring-slate-300"}`}
+          >
             {SOURCE_LABEL[offer.source] ?? offer.source}
           </span>
           {offer.affiliate_url ? (
@@ -221,6 +225,32 @@ export function Offers() {
     <div className="space-y-4">
       {data && <PendingLinksBanner pending={data.pending_link} />}
 
+      <div className="flex flex-wrap items-center gap-2" role="tablist" aria-label="Loja">
+        <span className="text-sm text-slate-500">Loja</span>
+        {["", ...SOURCES].map((s) => {
+          const selected = s === source;
+          const total = data?.by_source ? Object.values(data.by_source).reduce((a, b) => a + b, 0) : undefined;
+          const n = s === "" ? total : data?.by_source?.[s];
+          return (
+            <button
+              key={s || "todas"}
+              role="tab"
+              aria-selected={selected}
+              onClick={() => update({ source: s })}
+              className={`rounded-md px-3 py-1 text-sm font-semibold ring-1 ring-inset ${
+                selected
+                  ? s === ""
+                    ? "bg-slate-900 text-white ring-slate-900"
+                    : (SOURCE_STYLE[s]?.tab ?? "bg-slate-900 text-white ring-slate-900")
+                  : "bg-white text-slate-700 ring-slate-300 hover:bg-slate-50"
+              }`}
+            >
+              {s === "" ? "Todas" : SOURCE_LABEL[s]} {n !== undefined && <span className="opacity-70">{n}</span>}
+            </button>
+          );
+        })}
+      </div>
+
       <div className="flex flex-wrap gap-2" role="tablist">
         {TABS.map((t) => (
           <button
@@ -246,21 +276,6 @@ export function Offers() {
           placeholder="Buscar no título (ex.: koral azul)"
           className="w-full max-w-sm rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-slate-900"
         />
-        <label className="flex items-center gap-2 text-sm text-slate-600">
-          Loja
-          <select
-            value={source}
-            onChange={(e) => update({ source: e.target.value })}
-            className="rounded-md border border-slate-300 bg-white px-2 py-1"
-          >
-            <option value="">Todas</option>
-            {SOURCES.map((s) => (
-              <option key={s} value={s}>
-                {SOURCE_LABEL[s]}
-              </option>
-            ))}
-          </select>
-        </label>
         <label className="flex items-center gap-2 text-sm text-slate-600">
           Score mínimo
           <select

@@ -140,6 +140,9 @@ class OffersResponse(BaseModel):
     pending_link: int  # ofertas do ML aguardando link de afiliado (já acima do corte de pontuação)
     below_cut: int  # ofertas do ML sem link que ficaram de fora da fila pelo corte de pontuação
     items: list[OfferOut]
+    # Quantas ofertas da aba atual (status ou "prontas", pontuação mínima e busca) há em cada loja, SEM o filtro de loja:
+    # são os números das abas Todas / Mercado Livre / Shopee.
+    by_source: dict[str, int] = {}
 
 
 class PendingItem(BaseModel):
@@ -542,14 +545,15 @@ def create_app(
         min_history: float = Query(ScoringConfig.min_history_days, ge=0),
     ):
         with sessions() as session:
+            # Sempre avalia as duas lojas: o filtro de loja vem depois, para as abas poderem contar a outra.
             entries = assessed_groups(
                 session,
-                source=source,
                 max_age_days=max_age_days,
                 config=ScoringConfig(min_drop_pct=min_drop, min_history_days=min_history),
             )
         words = normalize(q).split() if q else []
         counts = {s: 0 for s in STATUSES}
+        by_source = {"mercadolivre": 0, "shopee": 0}
         items = []
         book = coupon_book()
         ready_count = pending_count = cut_count = 0
@@ -557,15 +561,21 @@ def create_app(
             product, verdict = group.product, group.verdict
             if words and not any(all(word in normalize(p.title) for word in words) for p, _ in group.members):
                 continue  # a busca vale também para as contagens: elas descrevem o que o filtro mostra
-            counts[verdict.status] += 1
             is_rdy = is_ready(product, verdict, sent, link=group.link)
+            chosen = is_rdy if ready else verdict.status == status
+            if chosen and verdict.score >= min_score:
+                by_source[product.source] = by_source.get(product.source, 0) + 1
+            if source and product.source != source:
+                continue
+            counts[verdict.status] += 1
             ready_count += is_rdy
             pending_count += needs_link(product, verdict, settings.link_min_score, link=group.link)
             cut_count += below_cut(product, verdict, settings.link_min_score, link=group.link)
-            chosen = is_rdy if ready else verdict.status == status
             if chosen and verdict.score >= min_score and len(items) < limit:
                 items.append(present(product, verdict, sent, group, book))
-        return OffersResponse(counts=counts, ready=ready_count, pending_link=pending_count, below_cut=cut_count, items=items)
+        return OffersResponse(
+            counts=counts, ready=ready_count, pending_link=pending_count, below_cut=cut_count, items=items, by_source=by_source
+        )
 
     @app.get("/api/products/{product_id}", response_model=ProductDetailOut, dependencies=[Depends(require_admin)])
     def product_detail(product_id: int):

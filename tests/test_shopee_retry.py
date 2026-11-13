@@ -91,3 +91,13 @@ def test_coleta_sem_erro_nao_marca_palavras_puladas():
     c = collector(script, ["kimono"])
 
     assert ids(c.collect()) == ["1.1"] and c.skipped == []
+
+
+def test_coleta_agendada_usa_a_ordenacao_e_o_tamanho_de_pagina_que_a_shopee_aguenta():
+    from achados.collectors.shopee import SORT_RELEVANCE, build_collector
+    from achados.config import Settings
+
+    c = build_collector(Settings(_env_file=None, shopee_app_id="app", shopee_secret="segredo"))
+
+    # Medido em produção: vendas (sort 2) e comissão (sort 5) dão System Error com página grande; relevância não.
+    assert c._sort_type == SORT_RELEVANCE and c._limit == 20 and c._max_pages == 5

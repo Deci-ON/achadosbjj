@@ -267,5 +267,8 @@ def build_collector(settings, keywords: list[str | None] | None = None) -> Shope
     """Coletor da Shopee pronto para o agendamento (preset de jiu-jitsu), a partir de `SHOPEE_*`."""
     http = httpx.Client(timeout=settings.request_timeout)
     client = ShopeeClient(settings.shopee_app_id, settings.shopee_secret, settings.shopee_api_url, http=http)
-    return ShopeeCollector(client, keywords=keywords or list(BJJ_KEYWORDS), max_pages=3, limit=50, sort_type=SORT_RELEVANCE)
+    # Medido em 2026-11-12 com `check-shopee`: a relevância é a ordenação que quase nunca dá `10000: System Error`
+    # (vendas falhou com 10+ por página, comissão com 50), e páginas menores falham menos. 20 por página x 5 páginas
+    # cobre 100 produtos por palavra, e o retry do coletor cobre o que ainda falhar.
+    return ShopeeCollector(client, keywords=keywords or list(BJJ_KEYWORDS), max_pages=5, limit=20, sort_type=SORT_RELEVANCE)
 

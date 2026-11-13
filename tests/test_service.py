@@ -237,7 +237,27 @@ def test_offers_sem_produtos_recentes(sessions, db):
         "pending_link": 0,
         "below_cut": 0,
         "items": [],
+        "by_source": {"mercadolivre": 0, "shopee": 0},
     }
+
+
+def test_offers_conta_por_loja_sem_o_filtro_de_loja_e_filtra_so_a_lista(sessions, db):
+    add_product(db, "product:ml", "Kimono Jiu Jitsu Koral", [(40, "500"), (3, "350")])
+    add_product(db, "1.2", "Kimono Jiu Jitsu Shopee", [(40, "500"), (3, "300")])
+    add_product(db, "1.3", "Faixa Jiu Jitsu Shopee", [(40, "100"), (3, "60")])
+    for product in db.scalars(select(Product).where(Product.external_id.in_(["1.2", "1.3"]))):
+        product.source = "shopee"
+    db.commit()
+
+    with TestClient(make_app(sessions)) as client:
+        todas = client.get("/api/offers", params=OFFERS, headers=AUTH).json()
+        so_shopee = client.get("/api/offers", params={**OFFERS, "source": "shopee"}, headers=AUTH).json()
+
+    assert todas["by_source"] == {"mercadolivre": 1, "shopee": 2}
+    assert {i["source"] for i in todas["items"]} == {"mercadolivre", "shopee"}
+    # Com o filtro de loja a lista e as contagens de status são só da Shopee, mas as abas de loja seguem mostrando as duas.
+    assert {i["source"] for i in so_shopee["items"]} == {"shopee"} and so_shopee["counts"]["offer"] == 2
+    assert so_shopee["by_source"] == {"mercadolivre": 1, "shopee": 2}
 
 
 # --- disparo manual -------------------------------------------------------

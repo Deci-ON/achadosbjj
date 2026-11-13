@@ -55,6 +55,20 @@ export const STATUS_STYLE: Record<Status, string> = {
 
 export const SOURCE_LABEL: Record<string, string> = { mercadolivre: "Mercado Livre", shopee: "Shopee" };
 
+// Uma cor por loja (selo, borda do card e aba): amarelo do Mercado Livre, laranja da Shopee.
+export const SOURCE_STYLE: Record<string, { badge: string; border: string; tab: string }> = {
+  mercadolivre: {
+    badge: "bg-yellow-100 text-yellow-900 ring-yellow-300",
+    border: "border-l-yellow-400",
+    tab: "bg-yellow-400 text-slate-900 ring-yellow-400",
+  },
+  shopee: {
+    badge: "bg-orange-100 text-orange-900 ring-orange-300",
+    border: "border-l-orange-500",
+    tab: "bg-orange-500 text-white ring-orange-500",
+  },
+};
+
 export const COUPON_STORE_LABEL: Record<string, string> = { ...SOURCE_LABEL, all: "Ambas as lojas" };
 export const COUPON_KIND_LABEL: Record<string, string> = {
   code: "Código para digitar",

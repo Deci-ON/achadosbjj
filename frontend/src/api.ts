@@ -82,6 +82,7 @@ export interface OffersResponse {
   pending_link: number;
   below_cut: number; // ofertas do ML sem link que ficaram de fora da fila pelo corte de pontuação
   items: Offer[];
+  by_source?: Record<string, number>; // ofertas da aba atual por loja, sem o filtro de loja (ausente num backend antigo)
 }
 
 export interface PendingItem {
