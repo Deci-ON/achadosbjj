@@ -18,7 +18,14 @@ from achados.collectors.mercadolivre_api import (
     MercadoLivreAPIError,
     MercadoLivreApiCollector,
 )
-from achados.collectors.shopee import SORT_SALES, ShopeeClient, ShopeeCollector
+from achados.collectors.shopee import (
+    PRODUCT_OFFER_QUERY,
+    SORT_SALES,
+    ShopeeAPIError,
+    ShopeeClient,
+    ShopeeCollector,
+    parse_node,
+)
 from achados.config import get_settings
 from achados.db import make_engine, make_session_factory
 from achados.logs import configure_logging
@@ -38,6 +45,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("init-db", help="cria as tabelas")
     sub.add_parser("stats", help="resumo do que já foi coletado")
     sub.add_parser("check-ml", help="testa em 2s se a API do Mercado Livre responde deste IP, sem gravar nada")
+
+    sub.add_parser("check-shopee", help="testa a API de afiliados da Shopee (credenciais, acesso, resposta), sem gravar nada")
 
     offers = sub.add_parser("offers", help="lista o que está em oferta de verdade, pelo histórico de preços")
     offers.add_argument("--source", choices=["shopee", "mercadolivre"])
@@ -149,6 +158,55 @@ def run_check_ml(api: MercadoLivreAPI | None = None) -> int:
         return 1
 
 
+# Códigos de erro da Open API de afiliados (documentação oficial, painel > Abrir API).
+SHOPEE_ERROR_HINTS = {
+    "10035": "a conta ainda não tem acesso à Open API: peça a liberação pelo formulário da Central de Ajuda",
+    "10020": "assinatura ou credencial inválida: confira SHOPEE_APP_ID e SHOPEE_SECRET e o relógio do servidor (tolerância de 10 min)",
+    "10030": "limite de chamadas excedido (8000 por hora): espere a próxima janela",
+    "10033": "a conta de afiliado está congelada",
+    "10034": "o ID de afiliado está na lista de bloqueio",
+}
+
+
+def run_check_shopee(client: ShopeeClient | None = None) -> int:
+    """Uma consulta de produtos à Open API de afiliados da Shopee. Valida credenciais, acesso e formato da resposta.
+
+    Não grava nada no banco e não imprime o AppID nem o secret.
+    """
+    try:
+        if client is None:
+            settings = get_settings()
+            client = ShopeeClient(settings.shopee_app_id, settings.shopee_secret, settings.shopee_api_url)
+        data = client.query(
+            PRODUCT_OFFER_QUERY, {"keyword": "kimono jiu jitsu", "page": 1, "limit": 5, "sortType": SORT_SALES}
+        )["productOfferV2"]
+    except BlockedError as exc:
+        print(f"BLOQUEADO  {exc}")
+        return 1
+    except ShopeeAPIError as exc:
+        message = str(exc)
+        hint = next((text for code, text in SHOPEE_ERROR_HINTS.items() if code in message), None)
+        print(f"ERRO  {message[:300]}")
+        if hint:
+            print(f"      -> {hint}")
+        return 2
+    except httpx.HTTPError as exc:
+        print(f"ERRO DE REDE  {type(exc).__name__}: {exc}")
+        return 1
+
+    nodes = data.get("nodes") or []
+    print(f"ok     resposta da API: {len(nodes)} produtos para 'kimono jiu jitsu' (pagina 1, limite 5)")
+    for node in nodes:
+        offer = parse_node(node)
+        if offer is None:
+            print(f"       ignorado (sem preço ou id): {str(node.get('productName'))[:50]}")
+            continue
+        link = "com link" if offer.affiliate_url else "SEM link"
+        commission = f"{float(offer.commission_rate) * 100:.1f}%" if offer.commission_rate is not None else "?"
+        print(f"       R$ {offer.price:>8} comissão {commission:>6} {link}  {offer.title[:55]}")
+    return 0 if nodes else 1
+
+
 def run_stats() -> int:
     sessions = make_session_factory(make_engine())
     with sessions() as session:
@@ -198,6 +256,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_stats()
     if args.command == "check-ml":
         return run_check_ml()
+    if args.command == "check-shopee":
+        return run_check_shopee()
     if args.command == "offers":
         return run_offers(args)
     return run_collect(args)

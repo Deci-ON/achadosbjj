@@ -28,7 +28,8 @@ from achados.service import create_app
 from achados.workflow import recent_sends
 from tests.test_service import AUTH, FakeCollector, FakeLock, add_product, settings
 
-NOON = datetime(2026, 11, 3, 15, 0, tzinfo=timezone.utc)  # 12:00 em Brasília
+# Hoje às 12:00 em Brasília. Relativo ao relógio porque `recent_sends` (carência de 7 dias) usa a hora de verdade.
+NOON = datetime.now(timezone.utc).replace(hour=15, minute=0, second=0, microsecond=0)
 
 
 class FakeClient:
@@ -143,8 +144,9 @@ def test_cancelar_job_so_vale_para_o_que_esta_na_fila(db):
 def test_janela_de_horario_e_dia_sao_de_brasilia():
     assert in_window(NOON, 8, 22) and in_window(NOON.replace(hour=23), 8, 22)  # 12:00 e 20:00 em Brasília
     assert not in_window(NOON.replace(hour=1), 8, 22) and not in_window(NOON.replace(hour=10), 8, 22)  # 22:00 e 07:00
-    assert day_start(NOON) == datetime(2026, 11, 3, 3, 0, tzinfo=timezone.utc)
-    assert day_start(NOON.replace(hour=1)) == datetime(2026, 11, 2, 3, 0, tzinfo=timezone.utc)  # 22:00 BRT do dia 2
+    midnight = NOON.replace(hour=3)  # meia-noite de Brasília, em UTC
+    assert day_start(NOON) == midnight
+    assert day_start(NOON.replace(hour=1)) == midnight - timedelta(days=1)  # 01:00 UTC ainda é o dia anterior em Brasília
 
 
 # --- robô -------------------------------------------------------------------------
