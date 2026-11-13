@@ -32,6 +32,38 @@ export interface Offer {
   needs_link: boolean; // oferta do ML sem link: está na fila
   sent_at: string | null; // último envio dentro da carência de 7 dias
   variants: Variant[]; // os tamanhos do modelo; vazio quando o produto não tem tamanhos
+  coupons?: OfferCoupon[]; // os cupons que estão na mensagem agora (opcional: backend antigo não manda)
+  attached_coupon_ids?: number[]; // os cupons anexados a esta oferta
+}
+
+export interface OfferCoupon {
+  id: number;
+  title: string;
+  kind: string;
+}
+
+export type CouponStore = "mercadolivre" | "shopee" | "all";
+export type CouponKind = "code" | "page" | "shipping";
+
+export interface Coupon {
+  id: number;
+  store: CouponStore;
+  kind: CouponKind;
+  title: string;
+  rule: string;
+  expires_at: string;
+  is_default: boolean;
+  active: boolean; // não venceu
+  created_at: string;
+}
+
+export interface CouponInput {
+  store: CouponStore;
+  kind: CouponKind;
+  title: string;
+  rule?: string;
+  expires_at: string;
+  is_default?: boolean;
 }
 
 export interface PricePoint {
@@ -264,6 +296,27 @@ export const api = {
   senderJobs: () => request<SenderJob[]>("/api/sender/jobs"),
   senderPerformance: (days = 30) => request<SenderPerformance>(`/api/sender/performance?days=${days}`),
   cancelSenderJob: (id: number) => request<{ cancelled: number }>(`/api/sender/jobs/${id}`, { method: "DELETE" }),
+  coupons: () => request<Coupon[]>("/api/coupons"),
+  createCoupon: (body: CouponInput) =>
+    request<Coupon>("/api/coupons", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  updateCoupon: (id: number, body: Partial<CouponInput>) =>
+    request<Coupon>(`/api/coupons/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  deleteCoupon: (id: number) => request<{ deleted: number }>(`/api/coupons/${id}`, { method: "DELETE" }),
+  /** Substitui os cupons anexados à oferta. */
+  setProductCoupons: (id: number, couponIds: number[]) =>
+    request<{ coupon_ids: number[] }>(`/api/products/${id}/coupons`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ coupon_ids: couponIds }),
+    }),
   /** Põe a oferta pronta na fila do robô (um job por grupo escolhido). */
   sendOffer: (id: number) => request<{ queued: number }>(`/api/products/${id}/send`, { method: "POST" }),
 };

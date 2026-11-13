@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { api, type Offer, type OffersResponse, type Status } from "../api";
+import { ApiError, api, type Coupon, type Offer, type OffersResponse, type Status } from "../api";
 import { CopyButton, ErrorBox, PendingLinksBanner, ScoreBadge, SendToBotButton, SentToggle, SizeChips, Spinner, StatusBadge } from "../components";
-import { SOURCE_LABEL, STATUS_HINT, STATUS_LABEL, dateTimeLabel, money, relative } from "../format";
+import { COUPON_KIND_LABEL, SOURCE_LABEL, STATUS_HINT, STATUS_LABEL, dateLabel, dateTimeLabel, money, relative } from "../format";
 
 type Tab = Status | "ready";
 
@@ -19,7 +19,67 @@ function isTab(value: string | null): value is Tab {
 
 const SOURCES = Object.keys(SOURCE_LABEL);
 
-function OfferCard({ offer, canSend, onChanged }: { offer: Offer; canSend: boolean; onChanged: () => void }) {
+/** Anexa/tira cupons da oferta. Só entram os ativos da loja da oferta (ou "Ambas"); sem nenhum, convida a cadastrar. */
+function CouponPicker({ offer, coupons, onChanged }: { offer: Offer; coupons: Coupon[]; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const options = coupons.filter((c) => c.active && (c.store === offer.source || c.store === "all"));
+  const attached = offer.attached_coupon_ids ?? [];
+
+  if (options.length === 0) {
+    return (
+      <Link to="/cupons" className="self-center text-xs text-slate-500 underline hover:text-slate-800">
+        Cadastrar cupom
+      </Link>
+    );
+  }
+
+  async function toggle(id: number, checked: boolean) {
+    setBusy(true);
+    setError("");
+    try {
+      const next = checked ? [...attached, id] : attached.filter((x) => x !== id);
+      await api.setProductCoupons(offer.id, next);
+      onChanged();
+    } catch (exc) {
+      setError(exc instanceof ApiError ? exc.message : "Não consegui salvar o cupom.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const count = options.filter((c) => attached.includes(c.id)).length;
+  return (
+    <details className="relative">
+      <summary className="cursor-pointer list-none rounded-md px-3 py-1.5 text-sm font-medium text-slate-700 ring-1 ring-slate-300 hover:bg-slate-50">
+        Cupom{count > 0 ? ` (${count})` : ""} ▾
+      </summary>
+      <div className="absolute left-0 z-10 mt-1 w-72 space-y-1 rounded-md bg-white p-2 shadow-lg ring-1 ring-slate-200">
+        {options.map((c) => (
+          <label key={c.id} className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={attached.includes(c.id)}
+              disabled={busy}
+              onChange={(e) => void toggle(c.id, e.target.checked)}
+            />
+            <span>
+              {c.title}
+              {c.is_default && <span className="ml-1 text-xs text-emerald-700">padrão</span>}
+              <span className="block text-xs text-slate-500">
+                {COUPON_KIND_LABEL[c.kind] ?? c.kind} · até {dateLabel(c.expires_at)}
+              </span>
+            </span>
+          </label>
+        ))}
+        {error && <p className="text-xs text-rose-700">{error}</p>}
+      </div>
+    </details>
+  );
+}
+
+function OfferCard({ offer, canSend, coupons, onChanged }: { offer: Offer; canSend: boolean; coupons: Coupon[]; onChanged: () => void }) {
   const drop = offer.real_discount_pct ?? 0;
   return (
     <li className="flex gap-3 rounded-lg bg-white p-3 shadow-sm ring-1 ring-slate-200">
@@ -62,9 +122,23 @@ function OfferCard({ offer, canSend, onChanged }: { offer: Offer; canSend: boole
           {offer.reasons[0]} · {offer.observed_days} dias de histórico · visto {dateTimeLabel(offer.last_seen_at)}
         </p>
         <SizeChips variants={offer.variants} />
+        {offer.coupons && offer.coupons.length > 0 && (
+          <ul className="mt-1.5 flex flex-wrap gap-1.5" aria-label="Cupons na mensagem">
+            {offer.coupons.map((c) => (
+              <li
+                key={c.id}
+                title={COUPON_KIND_LABEL[c.kind] ?? c.kind}
+                className="inline-flex items-center rounded-md bg-violet-50 px-1.5 py-0.5 text-xs font-medium text-violet-800 ring-1 ring-inset ring-violet-200"
+              >
+                🏷 {c.title}
+              </li>
+            ))}
+          </ul>
+        )}
         <div className="mt-2 flex flex-wrap items-start gap-2">
           {canSend && offer.ready && <SendToBotButton offer={offer} onChanged={onChanged} />}
           <CopyButton text={offer.message} />
+          <CouponPicker offer={offer} coupons={coupons} onChanged={onChanged} />
           {offer.status === "offer" && <SentToggle offer={offer} onChanged={onChanged} />}
           <a
             href={offer.affiliate_url ?? offer.url}
@@ -96,6 +170,14 @@ export function Offers() {
   const [loading, setLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
   const [canSend, setCanSend] = useState(false); // robô de envio configurado (SENDER_URL)
+  const [coupons, setCoupons] = useState<Coupon[]>([]); // carregados uma vez; os cards só filtram
+
+  useEffect(() => {
+    api
+      .coupons()
+      .then(setCoupons)
+      .catch(() => setCoupons([])); // sem cupons a lista de ofertas funciona igual
+  }, []);
 
   useEffect(() => {
     api
@@ -210,7 +292,7 @@ export function Offers() {
         </p>
       ) : (
         <ul className={`space-y-3 ${loading ? "opacity-60" : ""}`}>
-          {data?.items.map((offer) => <OfferCard key={offer.id} offer={offer} canSend={canSend} onChanged={() => setReloadKey((k) => k + 1)} />)}
+          {data?.items.map((offer) => <OfferCard key={offer.id} offer={offer} canSend={canSend} coupons={coupons} onChanged={() => setReloadKey((k) => k + 1)} />)}
         </ul>
       )}
     </div>

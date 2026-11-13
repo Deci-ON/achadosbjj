@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -51,6 +51,8 @@ class Product(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     snapshots: Mapped[list["PriceSnapshot"]] = relationship(back_populates="product", cascade="all, delete-orphan")
+    # Cascata também no ORM: o SQLite dos testes não aplica o ON DELETE CASCADE.
+    coupon_links: Mapped[list["ProductCoupon"]] = relationship(back_populates="product", cascade="all, delete-orphan")
 
 
 class PriceSnapshot(Base):
@@ -131,3 +133,33 @@ class SenderSetting(Base):
 
     key: Mapped[str] = mapped_column(String(32), primary_key=True)
     value: Mapped[str] = mapped_column(Text, default="")
+
+
+class Coupon(Base):
+    """Cupom cadastrado à mão (nenhuma das lojas tem API de cupom). Só vira uma linha na mensagem da oferta:
+    o comprador aplica no app/checkout, o cupom não vai no link de afiliado e nunca entra no preço nem na pontuação."""
+
+    __tablename__ = "coupons"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    store: Mapped[str] = mapped_column(String(16))  # mercadolivre | shopee | all
+    kind: Mapped[str] = mapped_column(String(16))  # code | page | shipping
+    title: Mapped[str] = mapped_column(String(80))  # o código digitado ou o nome do cupom
+    rule: Mapped[str] = mapped_column(Text, default="")  # texto livre curto: "compra mínima R$ 100, até R$ 30 off"
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)  # entra em toda mensagem da loja enquanto valer
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    product_links: Mapped[list["ProductCoupon"]] = relationship(back_populates="coupon", cascade="all, delete-orphan")
+
+
+class ProductCoupon(Base):
+    """Cupom anexado a uma oferta específica (o produto representante do modelo, o id que o painel usa)."""
+
+    __tablename__ = "product_coupons"
+
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), primary_key=True)
+    coupon_id: Mapped[int] = mapped_column(ForeignKey("coupons.id", ondelete="CASCADE"), primary_key=True)
+
+    product: Mapped[Product] = relationship(back_populates="coupon_links")
+    coupon: Mapped[Coupon] = relationship(back_populates="product_links")

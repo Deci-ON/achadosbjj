@@ -9,6 +9,10 @@ export function parseDate(iso: string): Date {
   return new Date(/(Z|[+-]\d{2}:?\d{2})$/.test(iso) ? iso : `${iso}Z`);
 }
 
+// A validade é um dia do calendário de Brasília: formatar nesse fuso evita sair um dia antes em outro fuso.
+const brDate = new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "America/Sao_Paulo" });
+export const dateLabel = (iso: string) => brDate.format(parseDate(iso));
+
 export const money = (value: number | null | undefined) => (value == null ? "—" : brl.format(value));
 export const dateTimeLabel = (iso: string | null) => (iso ? dateTime.format(parseDate(iso)) : "—");
 export const shortDateLabel = (ms: number) => shortDate.format(new Date(ms));
@@ -50,3 +54,10 @@ export const STATUS_STYLE: Record<Status, string> = {
 };
 
 export const SOURCE_LABEL: Record<string, string> = { mercadolivre: "Mercado Livre", shopee: "Shopee" };
+
+export const COUPON_STORE_LABEL: Record<string, string> = { ...SOURCE_LABEL, all: "Ambas as lojas" };
+export const COUPON_KIND_LABEL: Record<string, string> = {
+  code: "Código para digitar",
+  page: "Cupom da página de cupons",
+  shipping: "Frete grátis",
+};

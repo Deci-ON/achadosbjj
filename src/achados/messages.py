@@ -1,7 +1,9 @@
 import re
+from datetime import timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 
 MAX_TITLE = 100
+BRT = timezone(timedelta(hours=-3))  # o Brasil não tem horário de verão desde 2019
 
 
 def brl(value: Decimal | float | int | str) -> str:
@@ -16,11 +18,40 @@ def brl(value: Decimal | float | int | str) -> str:
     return f"R$ {'.'.join(groups)},{cents}"
 
 
+def _clean(text: str, limit: int) -> str:
+    # Asteriscos, sublinhados e til são formatação do WhatsApp: no meio do texto quebrariam o negrito.
+    text = re.sub(r"[*_~]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
 def clean_title(title: str) -> str:
-    # Asteriscos, sublinhados e til são formatação do WhatsApp: no meio do título quebrariam o negrito.
-    title = re.sub(r"[*_~]", "", title)
-    title = re.sub(r"\s+", " ", title).strip()
-    return title if len(title) <= MAX_TITLE else title[: MAX_TITLE - 1].rstrip() + "…"
+    return _clean(title, MAX_TITLE)
+
+
+# Onde ativar um cupom de página, por loja.
+_ACTIVATE_AT = {"mercadolivre": "em mercadolivre.com.br/cupons", "shopee": "na aba Cupons do app"}
+
+
+def coupon_line(coupon, store: str) -> str:
+    """Linha de cupom da mensagem, sempre com a validade no fim ("até DD/MM", horário de Brasília).
+
+    `coupon` tem kind, title, rule e expires_at; `store` é a loja da oferta (diz onde ativar um cupom "all").
+    Devolve "" se o título ficar vazio depois de limpo."""
+    title = _clean(coupon.title, 80)
+    if not title:
+        return ""
+    rule = _clean(coupon.rule or "", 120)
+    expires = coupon.expires_at if coupon.expires_at.tzinfo else coupon.expires_at.replace(tzinfo=timezone.utc)
+    until = f"até {expires.astimezone(BRT):%d/%m}"
+    if coupon.kind == "shipping":
+        head = f"🚚 Frete grátis: {title}"
+    elif coupon.kind == "page":
+        where = _ACTIVATE_AT.get(store, "")
+        head = f"🎟️ Ative o cupom {title}" + (f" {where}" if where else "")
+    else:
+        head = f"🎟️ Cupom: {title}"
+    return " · ".join(part for part in (head, rule, until) if part)
 
 
 def _with_label(ad_label: str, text: str) -> str:
@@ -38,6 +69,7 @@ def format_offer_message(
     window_days: int = 30,
     sizes: list[tuple[str, Decimal | float]] | None = None,
     ad_label: str = "",
+    coupon_lines: list[str] | None = None,
 ) -> str:
     """Texto pronto para colar no WhatsApp (negrito com *...*).
 
@@ -49,10 +81,14 @@ def format_offer_message(
 
     `sizes`: (tamanho, preço) dos tamanhos em oferta do mesmo modelo. Com mais de um, a mensagem lista os
     tamanhos; se os preços diferem, mostra "a partir de" e o preço de cada tamanho, e o desconto vira "até".
+
+    `coupon_lines`: linhas de `coupon_line`, uma por cupom, logo antes da linha do link (nos dois formatos).
     """
     name = clean_title(title)
+    coupons = "\n".join(line for line in (coupon_lines or []) if line)
+    block = f"{coupons}\n\n" if coupons else ""
     if not (is_offer and reference_price and real_discount_pct):
-        return _with_label(ad_label, f"*{name}*\n\n💰 {brl(price)}\n\n👉 {link}")
+        return _with_label(ad_label, f"*{name}*\n\n💰 {brl(price)}\n\n{block}👉 {link}")
 
     sizes = sizes or []
     prices = {Decimal(str(p)) for _, p in sizes}
@@ -70,4 +106,4 @@ def format_offer_message(
         size_line = f"📏 Tamanhos: {listing}\n"
     else:
         size_line = ""
-    return _with_label(ad_label, f"🔥 *{name}*\n\n{headline}\n{drop}\n{size_line}\n👉 {link}")
+    return _with_label(ad_label, f"🔥 *{name}*\n\n{headline}\n{drop}\n{size_line}\n{block}👉 {link}")

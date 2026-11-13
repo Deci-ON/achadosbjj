@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect, useState } from "react";
 import { BrowserRouter, NavLink, Navigate, Route, Routes } from "react-router";
 import { UNAUTHORIZED_EVENT, getToken, setToken } from "./api";
+import { Coupons } from "./pages/Coupons";
 import { Dashboard } from "./pages/Dashboard";
 import { Links } from "./pages/Links";
 import { Login } from "./pages/Login";
@@ -46,6 +47,9 @@ export default function App() {
           <NavLink to="/links" className={linkClass}>
             Gerar links
           </NavLink>
+          <NavLink to="/cupons" className={linkClass}>
+            Cupons
+          </NavLink>
           <NavLink to="/envio" className={linkClass}>
             Envio
           </NavLink>
@@ -63,6 +67,7 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/ofertas" element={<Offers />} />
           <Route path="/links" element={<Links />} />
+          <Route path="/cupons" element={<Coupons />} />
           <Route path="/envio" element={<Sender />} />
           <Route
             path="/produto/:id"
