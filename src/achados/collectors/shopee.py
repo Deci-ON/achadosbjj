@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import time
 from collections.abc import Iterator
 from decimal import Decimal, InvalidOperation
@@ -8,6 +9,8 @@ import httpx
 
 from achados.collectors.base import BlockedError, CollectorError
 from achados.schemas import Offer
+
+log = logging.getLogger("achados")
 
 # sortType da Shopee Affiliate Open API (productOfferV2).
 SORT_RELEVANCE = 1
@@ -147,6 +150,13 @@ class ShopeeClient:
         return nodes
 
 
+# `10000: System Error` vem do servidor da Shopee e passa sozinho (visto em 2026-11-12: a página 1 de 50 produtos
+# entrou e a seguinte falhou, depois a rodada seguinte falhou na primeira chamada). Os demais erros (assinatura,
+# acesso negado, conta congelada) não passam com nova tentativa e derrubam a coleta de uma vez.
+TRANSIENT_CODES = ("10000",)
+RETRY_WAITS = (2.0, 6.0, 20.0)
+
+
 class ShopeeCollector:
     source = "shopee"
 
@@ -158,6 +168,8 @@ class ShopeeCollector:
         limit: int = 50,
         sort_type: int = SORT_SALES,
         delay: float = 1.0,
+        retry_waits: tuple[float, ...] = RETRY_WAITS,
+        sleep=time.sleep,
     ):
         # `None` = sem palavra-chave (ofertas gerais).
         self._client = client
@@ -166,21 +178,52 @@ class ShopeeCollector:
         self._limit = limit
         self._sort_type = sort_type
         self._delay = delay
+        self._retry_waits = retry_waits
+        self._sleep = sleep
+        self.skipped: list[str] = []  # palavras que pararam por erro passageiro na última coleta
+
+    def _fetch_page(self, keyword: str | None, page: int) -> dict:
+        variables = {"keyword": keyword, "page": page, "limit": self._limit, "sortType": self._sort_type}
+        waits = iter(self._retry_waits)
+        while True:
+            try:
+                return self._client.query(PRODUCT_OFFER_QUERY, variables)["productOfferV2"]
+            except ShopeeAPIError as exc:
+                wait = next(waits, None)
+                if wait is None or not any(code in str(exc) for code in TRANSIENT_CODES):
+                    raise
+                log.info("Shopee: erro passageiro em %r pagina %d, nova tentativa em %.0fs", keyword, page, wait)
+                self._sleep(wait)
 
     def collect(self) -> Iterator[Offer]:
+        """Coleta por palavra. Um erro passageiro que não passa nas tentativas pula o resto daquela palavra e segue
+        para a próxima; só falha a coleta se nenhuma página veio (ou se o erro não é passageiro)."""
+        self.skipped = []
+        pages_ok = 0
+        last_error: ShopeeAPIError | None = None
         for keyword in self._keywords:
             for page in range(1, self._max_pages + 1):
-                data = self._client.query(
-                    PRODUCT_OFFER_QUERY,
-                    {"keyword": keyword, "page": page, "limit": self._limit, "sortType": self._sort_type},
-                )["productOfferV2"]
+                try:
+                    data = self._fetch_page(keyword, page)
+                except ShopeeAPIError as exc:
+                    if not any(code in str(exc) for code in TRANSIENT_CODES):
+                        raise
+                    last_error = exc
+                    self.skipped.append(f"{keyword} (pagina {page})")
+                    log.warning("Shopee: %r pagina %d falhou depois das tentativas, seguindo para a proxima palavra", keyword, page)
+                    break
+                pages_ok += 1
                 for node in data["nodes"]:
                     offer = parse_node(node)
                     if offer:
                         yield offer
                 if not data["pageInfo"]["hasNextPage"]:
                     break
-                time.sleep(self._delay)
+                self._sleep(self._delay)
+        if pages_ok == 0 and last_error is not None:
+            raise last_error
+        if self.skipped:
+            log.warning("Shopee: coleta parcial, palavras que pararam: %s", "; ".join(self.skipped))
 
 
 def _decimal(value) -> Decimal | None:

@@ -47,6 +47,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("check-ml", help="testa em 2s se a API do Mercado Livre responde deste IP, sem gravar nada")
 
     check_shopee = sub.add_parser("check-shopee", help="testa a API de afiliados da Shopee (credenciais, acesso, resposta), sem gravar nada")
+    check_shopee.add_argument("-k", "--keyword", default="kimono jiu jitsu", help="palavra-chave da consulta de teste")
+    check_shopee.add_argument("--limit", type=int, default=5, help="produtos por página (a coleta agendada usa 50)")
+    check_shopee.add_argument("--page", type=int, default=1)
+    check_shopee.add_argument("--sort", type=int, default=SORT_SALES, help="sortType: 1=relevância (a coleta agendada), 2=vendas, 5=comissão")
     check_shopee.add_argument(
         "--short-link",
         action="store_true",
@@ -173,7 +177,14 @@ SHOPEE_ERROR_HINTS = {
 }
 
 
-def run_check_shopee(client: ShopeeClient | None = None, short_link: bool = False) -> int:
+def run_check_shopee(
+    client: ShopeeClient | None = None,
+    short_link: bool = False,
+    keyword: str = "kimono jiu jitsu",
+    limit: int = 5,
+    page: int = 1,
+    sort_type: int = SORT_SALES,
+) -> int:
     """Uma consulta de produtos à Open API de afiliados da Shopee. Valida credenciais, acesso e formato da resposta.
 
     Não grava nada no banco e não imprime o AppID nem o secret.
@@ -183,7 +194,7 @@ def run_check_shopee(client: ShopeeClient | None = None, short_link: bool = Fals
             settings = get_settings()
             client = ShopeeClient(settings.shopee_app_id, settings.shopee_secret, settings.shopee_api_url)
         data = client.query(
-            PRODUCT_OFFER_QUERY, {"keyword": "kimono jiu jitsu", "page": 1, "limit": 5, "sortType": SORT_SALES}
+            PRODUCT_OFFER_QUERY, {"keyword": keyword, "page": page, "limit": limit, "sortType": sort_type}
         )["productOfferV2"]
     except BlockedError as exc:
         print(f"BLOQUEADO  {exc}")
@@ -200,7 +211,7 @@ def run_check_shopee(client: ShopeeClient | None = None, short_link: bool = Fals
         return 1
 
     nodes = data.get("nodes") or []
-    print(f"ok     resposta da API: {len(nodes)} produtos para 'kimono jiu jitsu' (pagina 1, limite 5)")
+    print(f"ok     resposta da API: {len(nodes)} produtos para {keyword!r} (pagina {page}, limite {limit}, sortType {sort_type})")
     for node in nodes:
         offer = parse_node(node)
         if offer is None:
@@ -285,7 +296,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "check-ml":
         return run_check_ml()
     if args.command == "check-shopee":
-        return run_check_shopee(short_link=args.short_link)
+        return run_check_shopee(
+            short_link=args.short_link, keyword=args.keyword, limit=args.limit, page=args.page, sort_type=args.sort
+        )
     if args.command == "offers":
         return run_offers(args)
     return run_collect(args)
