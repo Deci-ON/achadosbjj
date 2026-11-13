@@ -23,6 +23,10 @@ def clean_title(title: str) -> str:
     return title if len(title) <= MAX_TITLE else title[: MAX_TITLE - 1].rstrip() + "…"
 
 
+def _with_label(ad_label: str, text: str) -> str:
+    return f"{ad_label.strip()}\n\n{text}" if ad_label.strip() else text
+
+
 def format_offer_message(
     *,
     title: str,
@@ -33,8 +37,12 @@ def format_offer_message(
     real_discount_pct: int | None = None,
     window_days: int = 30,
     sizes: list[tuple[str, Decimal | float]] | None = None,
+    ad_label: str = "",
 ) -> str:
     """Texto pronto para colar no WhatsApp (negrito com *...*).
+
+    `ad_label`: identificação de publicidade, na primeira linha (o guia do CONAR pede que apareça em primeiro
+    plano, e os termos do Mercado Afiliados exigem). Vazio = sem a linha.
 
     O preço "de" informado pelo vendedor não entra: ele pode ser inflado. A comparação é com o preço
     normal medido no nosso histórico (mediana de `window_days` dias), e só aparece quando é oferta de verdade.
@@ -44,7 +52,7 @@ def format_offer_message(
     """
     name = clean_title(title)
     if not (is_offer and reference_price and real_discount_pct):
-        return f"*{name}*\n\n💰 {brl(price)}\n\n👉 {link}"
+        return _with_label(ad_label, f"*{name}*\n\n💰 {brl(price)}\n\n👉 {link}")
 
     sizes = sizes or []
     prices = {Decimal(str(p)) for _, p in sizes}
@@ -62,4 +70,4 @@ def format_offer_message(
         size_line = f"📏 Tamanhos: {listing}\n"
     else:
         size_line = ""
-    return f"🔥 *{name}*\n\n{headline}\n{drop}\n{size_line}\n👉 {link}"
+    return _with_label(ad_label, f"🔥 *{name}*\n\n{headline}\n{drop}\n{size_line}\n👉 {link}")

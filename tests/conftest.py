@@ -2,12 +2,11 @@ import os
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from achados.db import make_engine
 from achados.models import Base
@@ -43,9 +42,19 @@ def _jsonb_as_json_on_sqlite(type_, compiler, **kw):
 
 
 @pytest.fixture
-def sqlite_engine():
-    """SQLite em memória, uma única conexão compartilhada (serve a threads e a várias sessões)."""
-    engine = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
+def sqlite_engine(tmp_path):
+    """SQLite em arquivo temporário: uma conexão por thread, como o Postgres.
+
+    Antes era em memória com uma conexão só (StaticPool), e dois agendadores ou uma coleta mais uma consulta
+    usando essa conexão ao mesmo tempo davam `sqlite3.InterfaceError` de vez em quando.
+    """
+    engine = create_engine(f"sqlite:///{tmp_path / 'teste.db'}", connect_args={"check_same_thread": False, "timeout": 30})
+
+    @event.listens_for(engine, "connect")
+    def _fast(dbapi_connection, _record):  # banco descartável: sem fsync, o teste fica perto do tempo em memória
+        dbapi_connection.execute("PRAGMA synchronous=OFF")
+        dbapi_connection.execute("PRAGMA journal_mode=MEMORY")
+
     Base.metadata.create_all(engine)
     yield engine
     engine.dispose()

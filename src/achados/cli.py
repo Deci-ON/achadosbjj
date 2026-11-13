@@ -46,7 +46,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("stats", help="resumo do que já foi coletado")
     sub.add_parser("check-ml", help="testa em 2s se a API do Mercado Livre responde deste IP, sem gravar nada")
 
-    sub.add_parser("check-shopee", help="testa a API de afiliados da Shopee (credenciais, acesso, resposta), sem gravar nada")
+    check_shopee = sub.add_parser("check-shopee", help="testa a API de afiliados da Shopee (credenciais, acesso, resposta), sem gravar nada")
+    check_shopee.add_argument(
+        "--short-link",
+        action="store_true",
+        help="também gera um link curto de teste com sub-ids (cria um link de verdade na sua conta de afiliado)",
+    )
 
     offers = sub.add_parser("offers", help="lista o que está em oferta de verdade, pelo histórico de preços")
     offers.add_argument("--source", choices=["shopee", "mercadolivre"])
@@ -168,7 +173,7 @@ SHOPEE_ERROR_HINTS = {
 }
 
 
-def run_check_shopee(client: ShopeeClient | None = None) -> int:
+def run_check_shopee(client: ShopeeClient | None = None, short_link: bool = False) -> int:
     """Uma consulta de produtos à Open API de afiliados da Shopee. Valida credenciais, acesso e formato da resposta.
 
     Não grava nada no banco e não imprime o AppID nem o secret.
@@ -204,7 +209,30 @@ def run_check_shopee(client: ShopeeClient | None = None) -> int:
         link = "com link" if offer.affiliate_url else "SEM link"
         commission = f"{float(offer.commission_rate) * 100:.1f}%" if offer.commission_rate is not None else "?"
         print(f"       R$ {offer.price:>8} comissão {commission:>6} {link}  {offer.title[:55]}")
-    return 0 if nodes else 1
+    if not nodes:
+        return 1
+    if short_link:
+        return _check_short_link(client, nodes)
+    return 0
+
+
+def _check_short_link(client: ShopeeClient, nodes: list[dict]) -> int:
+    """Gera um link com sub-ids para o primeiro produto: confere o que o envio por grupo vai usar."""
+    origin = next((n.get("productLink") for n in nodes if n.get("productLink")), None)
+    if origin is None:
+        print("FALHA  nenhum produto veio com productLink para testar o link curto")
+        return 1
+    try:
+        link = client.generate_short_link(origin, ["wa", "teste"])
+    except (ShopeeAPIError, BlockedError) as exc:
+        print(f"ERRO  link curto: {str(exc)[:300]}")
+        return 2
+    except httpx.HTTPError as exc:
+        print(f"ERRO DE REDE  {type(exc).__name__}: {exc}")
+        return 1
+    print(f"ok     link curto com sub-ids [wa, teste]: {link}")
+    print("       abra o link e confira se cai no produto; o relatório de vendas devolve esses sub-ids em utmContent")
+    return 0
 
 
 def run_stats() -> int:
@@ -257,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "check-ml":
         return run_check_ml()
     if args.command == "check-shopee":
-        return run_check_shopee()
+        return run_check_shopee(short_link=args.short_link)
     if args.command == "offers":
         return run_offers(args)
     return run_collect(args)

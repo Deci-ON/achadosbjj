@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     sender_max_delay_seconds: float = 180.0
     sender_window_start_hour: int = 8  # só envia nesta janela (horário de Brasília)
     sender_window_end_hour: int = 22
+    # Envio automático (opcional; o painel liga, desligado por padrão): o robô enfileira sozinho as ofertas prontas.
+    sender_auto_min_score: int = 70  # corte de pontuação inicial (o painel pode mudar e fica guardado no banco)
+    sender_auto_interval_seconds: float = 300.0  # de quanto em quanto tempo procura candidatas
+    # Primeira linha de toda mensagem de oferta: identifica publicidade (CONAR; termos do Mercado Afiliados, 5.1).
+    # Vazio desliga a linha. Os termos do ML falam em hashtags do guia do CONAR: #publi ou #publicidade.
+    message_ad_label: str = "#publi · link de afiliado"
     admin_token: str = ""  # sem ele, os endpoints /api/* respondem 503 (nunca ficam abertos por esquecimento)
 
 

@@ -3,7 +3,8 @@
 O robô controla um WhatsApp Web logado num número dedicado (QR code). Isso é um cliente não oficial: o
 WhatsApp não permite, e o número pode ser banido. O que este módulo faz para reduzir o risco:
 
-- só manda o que você aprovou ("Enviar" na oferta): a fila nunca se enche sozinha;
+- só manda o que você aprovou ("Enviar" na oferta): a fila só se enche sozinha se você ligar o envio
+  automático (desligado por padrão, nunca liga sozinho; ver `SendWorker.auto_enqueue`);
 - intervalo aleatório entre mensagens, limite por dia e janela de horário (Brasília);
 - confere o preço no ML logo antes de mandar e cancela se subiu (ou se o anúncio sumiu);
 - pausa sozinho depois de falhas seguidas; botão de pausa no painel.
@@ -13,8 +14,10 @@ produto sai, a oferta é marcada como enviada (a mesma carência de 7 dias do en
 """
 
 import asyncio
+import hashlib
 import logging
 import random
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, time as dtime, timedelta, timezone
@@ -26,8 +29,10 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from achados.collectors.mercadolivre_api import MercadoLivreAPI, SellerTrust, best_offer
+from achados.collectors.shopee import ShopeeClient
 from achados.models import Product, SendGroup, SendJob, SenderSetting
 from achados.scheduler import LeaderLock
+from achados.scoring import normalize
 from achados.workflow import record_send
 
 log = logging.getLogger("achados")
@@ -39,6 +44,14 @@ AUTO_PAUSE_AFTER = 3  # falhas de envio seguidas pausam o robô
 POLL_SECONDS = 30.0
 RETRY_SECONDS = 60.0
 PRICE_RISE_TOLERANCE = Decimal("1.03")  # cancela se o preço subiu mais de 3% desde que entrou na fila
+# O automático não repõe na fila, por este tempo, a oferta cujo job foi cancelado ou falhou: sem isso, o
+# preço que subiu (cancelado na conferência) voltaria a cada ciclo e seria cancelado de novo, e o que você
+# cancelou no painel voltaria sozinho.
+AUTO_RETRY_COOLDOWN = timedelta(hours=24)
+
+# O que o automático enfileira: (produto representante do modelo, texto, imagem), da melhor para a pior.
+# Recebe o corte de pontuação. Vem do serviço, que reusa a lógica de /api/offers e `present`.
+Candidates = Callable[[int], list[tuple[Product, str, str | None]]]
 
 
 def utcnow() -> datetime:
@@ -150,6 +163,24 @@ def set_paused(session: Session, paused: bool, reason: str = "") -> None:
     _set(session, "pause_reason", reason if paused else "")
 
 
+def auto_enabled(session: Session) -> bool:
+    return _get(session, "auto_send") == "1"  # ausente = desligado: só liga por ação explícita no painel
+
+
+def auto_min_score(session: Session, default: int) -> int:
+    try:
+        return min(max(int(_get(session, "auto_min_score")), 0), 100)
+    except ValueError:
+        return default
+
+
+def set_auto(session: Session, enabled: bool, min_score: int | None = None) -> None:
+    """`min_score` None mantém o corte guardado."""
+    _set(session, "auto_send", "1" if enabled else "0")
+    if min_score is not None:
+        _set(session, "auto_min_score", str(min_score))
+
+
 def saved_groups(session: Session) -> list[SendGroup]:
     return list(session.scalars(select(SendGroup).order_by(SendGroup.name)))
 
@@ -176,21 +207,66 @@ def replace_groups(session: Session, groups: list[tuple[str, str]]) -> None:
 # --- fila -------------------------------------------------------------------------
 
 
-def enqueue_offer(session: Session, product: Product, text: str, image_url: str | None) -> int:
-    """Põe a oferta na fila de cada grupo escolhido. Devolve quantos jobs criou."""
+def group_tag(group: SendGroup) -> str:
+    """Identificador do grupo para o sub-id do link da Shopee: nome só com letras e números (até 12) + 4 hex do id.
+
+    Só [a-z0-9] porque a documentação não diz quais caracteres o sub-id aceita. Os 4 hex separam dois grupos de
+    nome parecido e não mudam se o grupo for renomeado.
+    """
+    name = re.sub(r"[^a-z0-9]", "", normalize(group.name))[:12]
+    return f"{name}{hashlib.sha1(group.chat_id.encode()).hexdigest()[:4]}"
+
+
+class GroupLinks(Protocol):
+    def link_for(self, product: Product, group: SendGroup) -> str | None:
+        """Link de afiliado próprio deste grupo para o produto, ou None (usa o link comum da oferta)."""
+
+
+class ShopeeGroupLinks:
+    """Um link curto da Shopee por grupo (`generateShortLink` com sub-ids), para o relatório de vendas dizer qual grupo vendeu.
+
+    Falhou? Devolve None e a oferta sai com o link comum: perder o rastreio de um envio é melhor do que não enviar.
+    """
+
+    def __init__(self, client: ShopeeClient):
+        self._client = client
+        self._cache: dict[tuple[int, str], str] = {}
+
+    def link_for(self, product: Product, group: SendGroup) -> str | None:
+        if product.source != "shopee" or not product.url:
+            return None
+        key = (product.id, group.chat_id)
+        if key not in self._cache:
+            try:
+                self._cache[key] = self._client.generate_short_link(product.url, ["wa", group_tag(group)])
+            except Exception as exc:
+                log.warning("link por grupo indisponível (produto %s): %s", product.id, type(exc).__name__)
+                return None
+        return self._cache[key]
+
+
+def enqueue_offer(
+    session: Session, product: Product, text: str, image_url: str | None, group_links: GroupLinks | None = None
+) -> int:
+    """Põe a oferta na fila de cada grupo escolhido. Devolve quantos jobs criou.
+
+    Com `group_links`, o link de afiliado do texto é trocado, em cada job, pelo link próprio do grupo.
+    """
     groups = saved_groups(session)
     if not groups:
         raise ValueError("nenhum grupo escolhido: marque os grupos na aba Envio")
     queued = session.scalar(select(func.count()).select_from(SendJob).where(SendJob.product_id == product.id, SendJob.status == "queued"))
     if queued:
         raise ValueError("esta oferta já está na fila de envio")
+    common_link = product.affiliate_url
     for group in groups:
+        group_link = group_links.link_for(product, group) if group_links and common_link else None
         session.add(
             SendJob(
                 product_id=product.id,
                 chat_id=group.chat_id,
                 group_name=group.name,
-                text=text,
+                text=text.replace(common_link, group_link) if group_link else text,
                 image_url=image_url,
                 price=product.price,
             )
@@ -199,12 +275,41 @@ def enqueue_offer(session: Session, product: Product, text: str, image_url: str 
     return len(groups)
 
 
+def summarize_conversions(nodes: list[dict], groups: list[SendGroup]) -> dict:
+    """Vendas da Shopee por grupo: agrupa as conversões pelo sub-id (`utmContent`) que o `ShopeeGroupLinks` pôs no link.
+
+    O formato do `utmContent` não está na documentação (só "valor dos seus sub-ids"), então o texto é quebrado em
+    qualquer separador e basta uma das partes ser o identificador do grupo. O que não casa com nenhum grupo
+    (links de antes, grupo tirado da lista) fica em `unattributed`.
+    """
+
+    def blank(**extra) -> dict:
+        return {**extra, "conversions": 0, "commission": 0.0, "completed": 0, "pending": 0, "cancelled": 0}
+
+    rows = {group_tag(g): blank(id=g.chat_id, name=g.name, tag=group_tag(g)) for g in groups}
+    other = blank()
+    for node in nodes:
+        tokens = {t.lower() for t in re.split(r"[^A-Za-z0-9]+", node.get("utmContent") or "") if t}
+        row = next((rows[tag] for tag in rows if tag in tokens), other)
+        row["conversions"] += 1
+        row["commission"] = round(row["commission"] + float(node.get("totalCommission") or 0), 2)
+        for order in node.get("orders") or []:
+            status = (order.get("orderStatus") or "").upper()
+            bucket = {"COMPLETED": "completed", "CANCELLED": "cancelled"}.get(status, "pending")  # UNPAID e PENDING
+            row[bucket] += 1
+    return {"groups": sorted(rows.values(), key=lambda r: (-r["commission"], r["name"])), "unattributed": other}
+
+
 def cancel_job(session: Session, job_id: int, reason: str = "cancelado no painel") -> bool:
     job = session.get(SendJob, job_id)
     if job is None or job.status != "queued":
         return False
     job.status, job.error = "cancelled", reason
     return True
+
+
+def queued_count(session: Session) -> int:
+    return session.scalar(select(func.count()).select_from(SendJob).where(SendJob.status == "queued")) or 0
 
 
 def day_start(now: datetime) -> datetime:
@@ -247,6 +352,10 @@ class SendWorker:
         max_delay: float = 180.0,
         window: tuple[int, int] = (8, 22),
         checker: PriceChecker | None = None,
+        candidates: Candidates | None = None,
+        group_links: GroupLinks | None = None,
+        auto_interval: float = 300.0,
+        auto_default_min_score: int = 70,
         clock: Callable[[], datetime] = utcnow,
         rng: random.Random | None = None,
         sleep: Callable[[float], "asyncio.Future"] = asyncio.sleep,
@@ -259,6 +368,11 @@ class SendWorker:
         self._max_delay = max(max_delay, min_delay)
         self._window = window
         self._checker = checker
+        self._candidates = candidates  # sem isso o envio automático não faz nada
+        self._group_links = group_links
+        self._auto_interval = auto_interval
+        self._auto_default_min_score = auto_default_min_score
+        self._next_auto: datetime | None = None
         self._clock = clock
         self._rng = rng or random.Random()
         self._sleep = sleep
@@ -283,10 +397,56 @@ class SendWorker:
         self.state.is_leader = await asyncio.to_thread(self._lock.acquire)
         if not self.state.is_leader:
             return RETRY_SECONDS
-        return await asyncio.to_thread(self.step)
+        return await asyncio.to_thread(self._leader_pass)
+
+    def _leader_pass(self) -> float:
+        self.auto_enqueue()
+        return self.step()
 
     def _delay(self) -> float:
         return self._rng.uniform(self._min_delay, self._max_delay)
+
+    def auto_enqueue(self) -> int:
+        """Envio automático: põe na fila as ofertas prontas (o painel liga e desliga). Devolve quantas ofertas entraram.
+
+        Só com o modo ligado, robô não pausado, grupos escolhidos e dentro da janela de horário: fora dela o
+        texto ficaria congelado por horas antes de sair, e o limite do dia que se conta seria o do dia errado
+        (o envio também respeita a janela, isto só evita fila velha). Não passa do que cabe no limite diário
+        (limite - enviadas hoje - já na fila; cada grupo é uma mensagem). Os jobs seguem pela conferência de
+        preço do ML, pelo intervalo e pelos limites de sempre. Procura candidatas a cada `auto_interval`.
+        """
+        if self._candidates is None:
+            return 0
+        now = self._clock()
+        try:
+            with self._sessions() as session:
+                if not auto_enabled(session) or is_paused(session) or not in_window(now, *self._window):
+                    return 0
+                groups = saved_groups(session)
+                budget = self._daily_cap - sent_today(session, now) - queued_count(session)
+                if not groups or budget < len(groups):
+                    return 0
+                if self._next_auto is not None and now < self._next_auto:
+                    return 0
+                self._next_auto = now + timedelta(seconds=self._auto_interval)
+
+                min_score = auto_min_score(session, self._auto_default_min_score)
+                enqueued = 0
+                for product, text, image_url in self._candidates(min_score):
+                    if budget < len(groups):
+                        break
+                    try:
+                        enqueue_offer(session, product, text, image_url, self._group_links)
+                    except ValueError:  # já está na fila (entrou à mão enquanto procurávamos)
+                        continue
+                    budget -= len(groups)
+                    enqueued += 1
+                    log.info("envio automático: produto %s na fila para %d grupo(s) (R$ %s)", product.id, len(groups), product.price)
+                session.commit()
+                return enqueued
+        except Exception:  # nunca derruba o laço do robô: o próximo ciclo tenta de novo
+            log.exception("envio automático falhou ao montar a fila")
+            return 0
 
     def step(self) -> float:
         """Um passo: manda no máximo uma mensagem. Devolve quanto dormir."""

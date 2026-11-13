@@ -78,15 +78,18 @@ export interface Run {
   error: string | null;
 }
 
+export interface SchedulerState {
+  enabled: boolean;
+  is_leader: boolean;
+  running: boolean;
+  consecutive_failures: number;
+  last_error: string | null;
+  next_due: string | null;
+}
+
 export interface StatusResponse {
-  scheduler: {
-    enabled: boolean;
-    is_leader: boolean;
-    running: boolean;
-    consecutive_failures: number;
-    last_error: string | null;
-    next_due: string | null;
-  };
+  scheduler: SchedulerState;
+  shopee_scheduler: SchedulerState | null; // null = coleta da Shopee não está ligada
   products: Record<string, number>;
   recent_runs: Run[];
 }
@@ -102,6 +105,35 @@ export interface SenderOverview {
   window: [number, number]; // janela de envio (horário de Brasília)
   groups: { id: string; name: string }[]; // os grupos que recebem as ofertas
   worker: { is_leader: boolean; last_error: string | null; next_send_at: string | null };
+  auto?: AutoSend; // ausente num backend que ainda não tem o envio automático
+}
+
+export interface AutoSend {
+  enabled: boolean;
+  min_score: number;
+}
+
+export interface AutoSendSettings extends AutoSend {
+  default_min_score: number;
+}
+
+export interface GroupSales {
+  id?: string;
+  name?: string;
+  tag?: string;
+  conversions: number; // pedidos feitos pelo link
+  commission: number; // comissão estimada (R$)
+  completed: number;
+  pending: number;
+  cancelled: number;
+}
+
+export interface SenderPerformance {
+  configured: boolean; // Shopee ligada (SHOPEE_APP_ID e SHOPEE_SECRET)
+  days: number;
+  conversions: number;
+  groups: GroupSales[];
+  unattributed: GroupSales | null; // vendas sem sub-id de grupo (links de antes, grupo tirado da lista)
 }
 
 export interface SenderGroup {
@@ -174,6 +206,7 @@ async function request<T>(path: string, init: RequestInit = {}, token = getToken
 
 export interface OffersQuery {
   status: Status | "ready"; // "ready" = prontas para enviar
+  source?: string; // "mercadolivre" | "shopee"; vazio = todas as lojas
   q?: string;
   minScore?: number;
   limit?: number;
@@ -183,10 +216,11 @@ export const api = {
   /** Confere o token antes de guardá-lo. */
   check: (token: string) => request<StatusResponse>("/api/status", {}, token),
   status: () => request<StatusResponse>("/api/status"),
-  offers: ({ status, q, minScore = 0, limit = 60 }: OffersQuery) => {
+  offers: ({ status, source, q, minScore = 0, limit = 60 }: OffersQuery) => {
     const params = new URLSearchParams({ limit: String(limit), min_score: String(minScore) });
     if (status === "ready") params.set("ready", "true");
     else params.set("status", status);
+    if (source) params.set("source", source);
     if (q?.trim()) params.set("q", q.trim());
     return request<OffersResponse>(`/api/offers?${params}`);
   },
@@ -210,6 +244,14 @@ export const api = {
   unmarkSent: (id: number) => request<ProductDetail>(`/api/products/${id}/sent`, { method: "DELETE" }),
   collect: () => request<{ status: string }>("/api/collect", { method: "POST" }),
   sender: () => request<SenderOverview>("/api/sender"),
+  senderAuto: () => request<AutoSendSettings>("/api/sender/auto"),
+  /** minScore null mantém o corte atual. */
+  setSenderAuto: (enabled: boolean, minScore: number | null) =>
+    request<AutoSendSettings>("/api/sender/auto", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled, min_score: minScore }),
+    }),
   senderGroups: () => request<SenderGroup[]>("/api/sender/groups"),
   setSenderGroups: (groups: { id: string; name: string }[]) =>
     request<{ groups: number }>("/api/sender/groups", {
@@ -220,6 +262,7 @@ export const api = {
   pauseSender: () => request<{ paused: boolean }>("/api/sender/pause", { method: "POST" }),
   resumeSender: () => request<{ paused: boolean }>("/api/sender/resume", { method: "POST" }),
   senderJobs: () => request<SenderJob[]>("/api/sender/jobs"),
+  senderPerformance: (days = 30) => request<SenderPerformance>(`/api/sender/performance?days=${days}`),
   cancelSenderJob: (id: number) => request<{ cancelled: number }>(`/api/sender/jobs/${id}`, { method: "DELETE" }),
   /** Põe a oferta pronta na fila do robô (um job por grupo escolhido). */
   sendOffer: (id: number) => request<{ queued: number }>(`/api/products/${id}/send`, { method: "POST" }),

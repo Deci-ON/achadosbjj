@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router";
-import { ApiError, api, type OffersResponse, type Status, type StatusResponse } from "../api";
+import { ApiError, api, type OffersResponse, type Status, type SchedulerState, type StatusResponse } from "../api";
 import { ErrorBox, PendingLinksBanner, Spinner } from "../components";
 import { SOURCE_LABEL, STATUS_HINT, STATUS_LABEL, dateTimeLabel, duration, relative } from "../format";
 
@@ -12,6 +12,33 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
       <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">{title}</h2>
       <div className="mt-2">{children}</div>
     </section>
+  );
+}
+
+// Estado da coleta de uma loja; o botão "Coletar agora" só existe no card do Mercado Livre.
+function SchedulerCard({ title, scheduler, offText }: { title: string; scheduler: SchedulerState | null; offText: string }) {
+  return (
+    <Card title={title}>
+      {!scheduler ? (
+        <>
+          <p className="text-lg font-semibold">Desligada</p>
+          <p className="text-sm text-slate-600">{offText}</p>
+        </>
+      ) : (
+        <>
+          <p className="text-lg font-semibold">{!scheduler.enabled ? "Desligada" : scheduler.running ? "Rodando agora…" : "Ociosa"}</p>
+          <p className="text-sm text-slate-600">
+            {scheduler.enabled ? (scheduler.is_leader ? "Este servidor coleta" : "Aguardando liderança") : offText}
+          </p>
+          {scheduler.enabled && !scheduler.running && <p className="mt-1 text-sm text-slate-600">Próxima: {relative(scheduler.next_due)}</p>}
+          {scheduler.consecutive_failures > 0 && (
+            <p className="mt-2 text-sm text-rose-700">
+              {scheduler.consecutive_failures} falha(s) seguida(s): {scheduler.last_error}
+            </p>
+          )}
+        </>
+      )}
+    </Card>
   );
 }
 
@@ -58,7 +85,7 @@ export function Dashboard() {
   if (!status && !error) return <Spinner />;
   if (!status) return <ErrorBox message={error} />;
 
-  const { scheduler, products, recent_runs: runs } = status;
+  const { scheduler, shopee_scheduler: shopeeScheduler = null, products, recent_runs: runs } = status;
   const last = runs[0];
   const total = Object.values(products).reduce((a, b) => a + b, 0);
 
@@ -66,8 +93,8 @@ export function Dashboard() {
     <div className="space-y-4">
       {error && <ErrorBox message={error} />}
       <PendingLinksBanner pending={pendingLinks} />
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Card title="Coleta">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        <Card title="Coleta Mercado Livre">
           <p className="text-lg font-semibold">
             {!scheduler.enabled ? "Desligada" : scheduler.running ? "Rodando agora…" : "Ociosa"}
           </p>
@@ -86,12 +113,15 @@ export function Dashboard() {
           {feedback && <p className="mt-2 text-xs text-slate-600">{feedback}</p>}
         </Card>
 
+        <SchedulerCard title="Coleta Shopee" scheduler={shopeeScheduler} offText="Shopee desligada" />
+
         <Card title="Última coleta">
           {last ? (
             <>
               <p className={`text-lg font-semibold ${last.status === "error" ? "text-rose-700" : ""}`}>
                 {last.status === "ok" ? "Concluída" : last.status === "running" ? "Em andamento" : "Com erro"}
               </p>
+              <p className="text-sm text-slate-600">{SOURCE_LABEL[last.source] ?? last.source}</p>
               <p className="text-sm text-slate-600">{relative(last.started_at)}</p>
               <p className="text-sm text-slate-600">
                 {last.items_seen} vistos, {last.items_new} novos
@@ -155,6 +185,7 @@ export function Dashboard() {
             <thead className="text-xs uppercase text-slate-500">
               <tr>
                 <th className="py-1 pr-4">Início</th>
+                <th className="py-1 pr-4">Loja</th>
                 <th className="py-1 pr-4">Duração</th>
                 <th className="py-1 pr-4">Resultado</th>
                 <th className="py-1 pr-4">Vistos</th>
@@ -166,6 +197,7 @@ export function Dashboard() {
               {runs.map((run) => (
                 <tr key={run.id} className="border-t border-slate-100">
                   <td className="py-1 pr-4">{dateTimeLabel(run.started_at)}</td>
+                  <td className="py-1 pr-4">{SOURCE_LABEL[run.source] ?? run.source}</td>
                   <td className="py-1 pr-4">{duration(run.started_at, run.finished_at)}</td>
                   <td className="py-1 pr-4">{run.status}</td>
                   <td className="py-1 pr-4">{run.items_seen}</td>

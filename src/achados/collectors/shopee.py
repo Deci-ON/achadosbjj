@@ -40,6 +40,24 @@ query ProductOffers($keyword: String, $page: Int, $limit: Int, $sortType: Int) {
 """.strip()
 
 
+CONVERSION_QUERY = """
+query Conversions($start: Int, $end: Int, $limit: Int, $scrollId: String) {
+  conversionReport(purchaseTimeStart: $start, purchaseTimeEnd: $end, limit: $limit, scrollId: $scrollId) {
+    nodes {
+      conversionId
+      purchaseTime
+      clickTime
+      utmContent
+      buyerType
+      totalCommission
+      orders { orderId orderStatus items { itemId itemName qty actualAmount itemTotalCommission displayItemStatus } }
+    }
+    pageInfo { limit hasNextPage scrollId }
+  }
+}
+""".strip()
+
+
 # Palavras do nicho. A busca da Shopee mistura judô e infantil; a regra de nicho (`scoring.BJJ_RULES`) exige
 # "jiu jitsu"/BJJ/rash guard no título, então o resto é descartado na pontuação, não aqui.
 BJJ_KEYWORDS = [
@@ -94,6 +112,39 @@ class ShopeeClient:
         if body.get("errors"):
             raise ShopeeAPIError(json.dumps(body["errors"], ensure_ascii=False))
         return body["data"]
+
+    def generate_short_link(self, origin_url: str, sub_ids: list[str]) -> str:
+        """Link curto de afiliado com `subIds` (até 5): eles voltam em `utmContent` no relatório de conversão.
+
+        A mutação documentada leva o `input` inline; `json.dumps` produz strings e listas válidas em GraphQL.
+        """
+        query = (
+            "mutation { generateShortLink(input: {"
+            f"originUrl: {json.dumps(origin_url)}, subIds: {json.dumps(sub_ids)}"
+            "}) { shortLink } }"
+        )
+        link = ((self.query(query, {}) or {}).get("generateShortLink") or {}).get("shortLink")
+        if not link:
+            raise ShopeeAPIError("a Shopee não devolveu o link curto")
+        return link
+
+    def conversion_report(self, start: int, end: int, limit: int = 500, max_pages: int = 20) -> list[dict]:
+        """Conversões (pedidos pelos seus links) com compra entre `start` e `end` (unix). Só vale 3 meses para trás.
+
+        A paginação é por `scrollId`, que vale 30 s; a primeira consulta de um período também só pode repetir
+        depois de 30 s (documentação da API), por isso quem chama guarda o resultado em cache.
+        """
+        nodes: list[dict] = []
+        scroll_id = None
+        for _ in range(max_pages):
+            variables = {"start": start, "end": end, "limit": limit, "scrollId": scroll_id}
+            data = self.query(CONVERSION_QUERY, variables)["conversionReport"]
+            nodes += data.get("nodes") or []
+            info = data.get("pageInfo") or {}
+            if not info.get("hasNextPage") or not info.get("scrollId"):
+                break
+            scroll_id = info["scrollId"]
+        return nodes
 
 
 class ShopeeCollector:
@@ -174,3 +225,4 @@ def build_collector(settings, keywords: list[str | None] | None = None) -> Shope
     http = httpx.Client(timeout=settings.request_timeout)
     client = ShopeeClient(settings.shopee_app_id, settings.shopee_secret, settings.shopee_api_url, http=http)
     return ShopeeCollector(client, keywords=keywords or list(BJJ_KEYWORDS), max_pages=3, limit=50, sort_type=SORT_RELEVANCE)
+

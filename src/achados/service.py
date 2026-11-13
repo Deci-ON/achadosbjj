@@ -9,19 +9,21 @@ import asyncio
 import contextlib
 import logging
 import secrets
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from achados.affiliate import effective_link, validate_affiliate_url
 from achados.collectors.mercadolivre_api import PRESETS, MercadoLivreAPI, build_collector
-from achados.collectors.shopee import build_collector as build_shopee_collector
+from achados.collectors.base import BlockedError
+from achados.collectors.shopee import ShopeeAPIError, ShopeeClient, build_collector as build_shopee_collector
 from achados.config import Settings, get_settings
 from achados.db import make_engine, make_session_factory
 from achados.frontend import mount_frontend
@@ -31,11 +33,15 @@ from achados.messages import format_offer_message
 from achados.offers import assess_product, assess_products
 from achados.scheduler import CollectScheduler, LeaderLock
 from achados.sender import (
+    AUTO_RETRY_COOLDOWN,
     SENDER_LOCK_KEY,
+    ShopeeGroupLinks,
     MlPriceChecker,
     SenderClient,
     SenderError,
     SendWorker,
+    auto_enabled,
+    auto_min_score,
     cancel_job,
     enqueue_offer,
     is_paused,
@@ -43,7 +49,9 @@ from achados.sender import (
     replace_groups,
     saved_groups,
     sent_today,
+    set_auto,
     set_paused,
+    summarize_conversions,
     utcnow,
 )
 from achados.scoring import IRRELEVANT, LEARNING, NO_OFFER, OFFER, ScoringConfig, Verdict, normalize
@@ -148,6 +156,11 @@ class GroupsIn(BaseModel):
     groups: list[GroupIn]  # os grupos que recebem as ofertas; o que não estiver aqui sai da lista
 
 
+class AutoIn(BaseModel):
+    enabled: bool
+    min_score: int | None = Field(None, ge=0, le=100)  # null mantém o corte guardado
+
+
 class BulkLinkItem(BaseModel):
     id: int
     url: str
@@ -165,6 +178,7 @@ def offer_out(
     sent: Sent | None = None,
     min_link_score: int = 0,
     group: Group | None = None,
+    ad_label: str = "",
 ) -> OfferOut:
     """`product`/`verdict` são os campos próprios; com `group` de vários tamanhos, o título, a mensagem, o
     link e os sinais de fila/pronta são do modelo (do representante), e `variants` traz cada tamanho."""
@@ -199,6 +213,7 @@ def offer_out(
             real_discount_pct=head_verdict.real_discount_pct,
             window_days=ScoringConfig.window_days,
             sizes=model.offer_sizes() if model else None,
+            ad_label=ad_label,
         ),
         ready=is_ready(head, head_verdict, sent, link=affiliate_url),
         needs_link=needs_link(head, head_verdict, min_link_score, link=affiliate_url),
@@ -218,6 +233,7 @@ def create_app(
     sessions: sessionmaker[Session] | None = None,
     scheduler: CollectScheduler | None = None,
     shopee_scheduler: CollectScheduler | None = None,
+    shopee_client: ShopeeClient | None = None,
     sender_client: SenderClient | None = None,
     send_worker: SendWorker | None = None,
 ) -> FastAPI:
@@ -254,6 +270,48 @@ def create_app(
 
     schedulers = {"mercadolivre": scheduler, **({"shopee": shopee_scheduler} if shopee_scheduler else {})}
 
+    def present(product: Product, verdict: Verdict, sent: Sent | None = None, group: Group | None = None) -> OfferOut:
+        # O link do modelo vale para todos os tamanhos: pode estar guardado em qualquer um deles.
+        holder = next((p for p, _ in group.members if p.affiliate_url), product) if group else product
+        link, origin = effective_link(holder)
+        return offer_out(product, verdict, link, origin, sent, settings.link_min_score, group, settings.message_ad_label)
+
+    def assessed_groups(session: Session, **assess) -> list[tuple[Group, Sent | None]]:
+        """Um item por modelo (os tamanhos de um kimono entram juntos), do melhor para o pior, com o último envio de cada.
+        É a base de /api/offers e do envio automático."""
+        groups = group_models(assess_products(session, **assess))
+        sends = recent_sends(session)
+        return [(group, latest_sent(sends, group.ids)) for group in groups]
+
+    def auto_candidates(min_score: int) -> list[tuple[Product, str, str | None]]:
+        """As ofertas que o envio automático pode enfileirar: prontas (a mesma regra do botão "Enviar"), em oferta e
+        com pontuação >= `min_score`, da melhor para a pior. Texto e imagem são os de `present`, como no envio manual.
+        Fica de fora o modelo que já tem job na fila (qualquer tamanho) ou que teve job cancelado/falho há pouco."""
+        with sessions() as session:
+            groups = assessed_groups(session)
+            blocked = set(
+                session.scalars(
+                    select(SendJob.product_id).where(
+                        (SendJob.status == "queued")
+                        | (SendJob.status.in_(("cancelled", "failed")) & (SendJob.created_at >= utcnow() - AUTO_RETRY_COOLDOWN))
+                    )
+                )
+            )
+        found = []
+        for group, sent in groups:
+            if group.verdict.score < min_score or blocked.intersection(group.ids):
+                continue
+            offer = present(group.product, group.verdict, sent, group)
+            if offer.ready and offer.status == OFFER:
+                found.append((group.product, offer.message, offer.image_url))
+        return found
+
+    if shopee_client is None and settings.shopee_app_id and settings.shopee_secret:
+        shopee_client = ShopeeClient(
+            settings.shopee_app_id, settings.shopee_secret, settings.shopee_api_url, http=httpx.Client(timeout=settings.request_timeout)
+        )
+    group_links = ShopeeGroupLinks(shopee_client) if shopee_client else None  # um link por grupo, para ver qual grupo vende
+
     if sender_client is None and settings.sender_url:
         sender_client = SenderClient(settings.sender_url, settings.sender_token)
     if send_worker is None:
@@ -270,15 +328,13 @@ def create_app(
             max_delay=settings.sender_max_delay_seconds,
             window=(settings.sender_window_start_hour, settings.sender_window_end_hour),
             checker=checker,
+            candidates=auto_candidates,
+            group_links=group_links,
+            auto_interval=settings.sender_auto_interval_seconds,
+            auto_default_min_score=settings.sender_auto_min_score,
         )
 
     manual_tasks: set[asyncio.Task] = set()
-
-    def present(product: Product, verdict: Verdict, sent: Sent | None = None, group: Group | None = None) -> OfferOut:
-        # O link do modelo vale para todos os tamanhos: pode estar guardado em qualquer um deles.
-        holder = next((p for p, _ in group.members if p.affiliate_url), product) if group else product
-        link, origin = effective_link(holder)
-        return offer_out(product, verdict, link, origin, sent, settings.link_min_score, group)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -361,23 +417,21 @@ def create_app(
         min_history: float = Query(ScoringConfig.min_history_days, ge=0),
     ):
         with sessions() as session:
-            verdicts = assess_products(
+            entries = assessed_groups(
                 session,
                 source=source,
                 max_age_days=max_age_days,
                 config=ScoringConfig(min_drop_pct=min_drop, min_history_days=min_history),
             )
-            sends = recent_sends(session)
         words = normalize(q).split() if q else []
         counts = {s: 0 for s in STATUSES}
         items = []
         ready_count = pending_count = cut_count = 0
-        for group in group_models(verdicts):  # um item por modelo: os tamanhos de um kimono entram juntos
+        for group, sent in entries:
             product, verdict = group.product, group.verdict
             if words and not any(all(word in normalize(p.title) for word in words) for p, _ in group.members):
                 continue  # a busca vale também para as contagens: elas descrevem o que o filtro mostra
             counts[verdict.status] += 1
-            sent = latest_sent(sends, group.ids)
             is_rdy = is_ready(product, verdict, sent, link=group.link)
             ready_count += is_rdy
             pending_count += needs_link(product, verdict, settings.link_min_score, link=group.link)
@@ -482,6 +536,23 @@ def create_app(
             raise HTTPException(409, "envio automático desligado (SENDER_URL vazio)")
         return sender_client
 
+    def auto_state(session: Session) -> dict:
+        return {"enabled": auto_enabled(session), "min_score": auto_min_score(session, settings.sender_auto_min_score)}
+
+    @app.get("/api/sender/auto", dependencies=[Depends(require_admin)])
+    def sender_auto():
+        with sessions() as session:
+            return {**auto_state(session), "default_min_score": settings.sender_auto_min_score}
+
+    @app.put("/api/sender/auto", dependencies=[Depends(require_admin)])
+    def sender_set_auto(body: AutoIn):
+        """Liga/desliga o envio automático (só aqui; nunca liga sozinho) e, se vier, muda o corte de pontuação."""
+        with sessions() as session:
+            set_auto(session, body.enabled, body.min_score)
+            session.commit()
+        log.info("envio automático %s (corte %s)", "ligado" if body.enabled else "desligado", body.min_score if body.min_score is not None else "mantido")
+        return sender_auto()
+
     @app.get("/api/sender", dependencies=[Depends(require_admin)])
     def sender_overview():
         connection = {"state": "off", "qr": None}
@@ -500,6 +571,7 @@ def create_app(
                 "daily_cap": settings.sender_daily_cap,
                 "sent_today": sent_today(session, utcnow()),
                 "queued": queued,
+                "auto": auto_state(session),
                 "window": [settings.sender_window_start_hour, settings.sender_window_end_hour],
                 "groups": [{"id": g.chat_id, "name": g.name} for g in saved_groups(session)],
                 "worker": {
@@ -544,6 +616,30 @@ def create_app(
             session.commit()
         return {"paused": False}
 
+    performance_cache: dict[int, tuple[float, dict]] = {}
+
+    @app.get("/api/sender/performance", dependencies=[Depends(require_admin)])
+    def sender_performance(days: int = Query(30, ge=1, le=90)):
+        """Vendas da Shopee por grupo (relatório de conversão da API, agrupado pelo sub-id do link de cada grupo).
+
+        A API só deixa repetir a consulta de um período a cada 30 s e só guarda 3 meses: o resultado fica 15 min em cache.
+        """
+        if shopee_client is None:
+            return {"configured": False, "days": days, "groups": [], "unattributed": None, "conversions": 0}
+        cached = performance_cache.get(days)
+        if cached and time.monotonic() - cached[0] < 900:
+            return cached[1]
+        end = int(time.time())
+        try:
+            nodes = shopee_client.conversion_report(end - days * 86400, end)
+        except (ShopeeAPIError, BlockedError, httpx.HTTPError) as exc:
+            raise HTTPException(502, f"a Shopee não respondeu o relatório: {str(exc)[:200]}") from exc
+        with sessions() as session:
+            summary = summarize_conversions(nodes, saved_groups(session))
+        result = {"configured": True, "days": days, "conversions": len(nodes), **summary}
+        performance_cache[days] = (time.monotonic(), result)
+        return result
+
     @app.get("/api/sender/jobs", dependencies=[Depends(require_admin)])
     def sender_jobs(limit: int = Query(50, ge=1, le=200)):
         with sessions() as session:
@@ -582,7 +678,7 @@ def create_app(
         with sessions() as session:
             product = session.get(Product, product_id)
             try:
-                queued = enqueue_offer(session, product, detail.message, detail.image_url)
+                queued = enqueue_offer(session, product, detail.message, detail.image_url, group_links)
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from exc
             session.commit()
@@ -604,6 +700,8 @@ def create_app(
         manual_tasks.add(task)  # referência forte: o loop só guarda referência fraca
         task.add_done_callback(manual_tasks.discard)
         return {"status": "started"}
+
+    app.state.sender_candidates = auto_candidates  # exposto para os testes alimentarem um SendWorker
 
     if settings.static_dir and not mount_frontend(app, Path(settings.static_dir)):
         log.warning("STATIC_DIR=%s não tem index.html: servindo só a API", settings.static_dir)

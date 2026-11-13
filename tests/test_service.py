@@ -1,3 +1,4 @@
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -44,7 +45,7 @@ class BusyScheduler(CollectScheduler):
 
 
 def settings(**overrides) -> Settings:
-    return Settings(_env_file=None, admin_token=TOKEN, **overrides)
+    return Settings(_env_file=None, admin_token=TOKEN, **{"message_ad_label": "", **overrides})  # sem a linha de publicidade nos testes antigos
 
 
 def make_app(sessions, *, leader=True, enabled=True, cls=CollectScheduler, **overrides):
@@ -278,13 +279,37 @@ def test_post_collect_recusa_quando_ja_ha_coleta(sessions):
     assert response.status_code == 409 and "andamento" in response.json()["detail"]
 
 
+# --- identificação de publicidade --------------------------------------------
+
+
+def test_a_mensagem_pronta_comeca_com_a_identificacao_de_publicidade_por_padrao(sessions, db):
+    seed_offers(db)
+    assert Settings(_env_file=None).message_ad_label == "#publi · link de afiliado"  # o padrão de produção é ligado
+
+    with TestClient(make_app(sessions, message_ad_label="#publi · link de afiliado")) as client:
+        body = client.get("/api/offers", params=OFFERS, headers=AUTH).json()
+
+    assert all(i["message"].startswith("#publi · link de afiliado\n\n") for i in body["items"])
+
+
+def test_rotulo_vazio_tira_a_linha(sessions, db):
+    seed_offers(db)
+
+    with TestClient(make_app(sessions, message_ad_label="")) as client:
+        body = client.get("/api/offers", params=OFFERS, headers=AUTH).json()
+
+    assert not any("#publi" in i["message"] for i in body["items"])
+
+
 # --- Shopee agendada ---------------------------------------------------------
 
 
 class ShopeeFakeCollector:
     source = "shopee"
+    started = threading.Event()  # a coleta já está rodando: `state.running` fica verdadeiro até ela acabar
 
     def collect(self):
+        ShopeeFakeCollector.started.set()
         yield Offer(
             source="shopee",
             external_id="1.2",
@@ -298,7 +323,7 @@ class ShopeeFakeCollector:
 def make_shopee_app(sessions, **overrides):
     shopee = CollectScheduler(sessions, FakeLock(), ShopeeFakeCollector, "shopee", interval=6 * 3600, startup_delay=3600)
     ml = CollectScheduler(sessions, FakeLock(), FakeCollector, "mercadolivre", interval=6 * 3600, startup_delay=3600)
-    return create_app(settings(**overrides), sessions=sessions, scheduler=ml, shopee_scheduler=shopee)
+    return create_app(settings(**overrides), sessions=sessions, scheduler=ml, shopee_scheduler=shopee), shopee
 
 
 def test_shopee_so_e_agendada_com_as_credenciais(sessions):
@@ -314,13 +339,18 @@ def test_shopee_so_e_agendada_com_as_credenciais(sessions):
 
 
 def test_post_collect_da_shopee_roda_so_a_coleta_da_shopee(sessions):
-    with TestClient(make_shopee_app(sessions)) as client:
-        assert wait_until(lambda: client.get("/api/status", headers=AUTH).json()["shopee_scheduler"]["is_leader"])
+    app, shopee = make_shopee_app(sessions)
+    ShopeeFakeCollector.started.clear()
+    with TestClient(app) as client:
+        assert wait_until(lambda: shopee.state.is_leader)  # estado em memória: o banco do teste é uma conexão só
 
         response = client.post("/api/collect", params={"source": "shopee"}, headers=AUTH)
         assert response.status_code == 202
-        assert wait_until(lambda: client.get("/api/status", headers=AUTH).json()["products"] == {"shopee": 1})
-        runs = client.get("/api/status", headers=AUTH).json()["recent_runs"]
+        # Só consulta o banco depois que a coleta acabou: a conexão SQLite do teste não aguenta duas threads.
+        assert ShopeeFakeCollector.started.wait(5) and wait_until(lambda: not shopee.state.running)
+        status = client.get("/api/status", headers=AUTH).json()
+        runs = status["recent_runs"]
+    assert status["products"] == {"shopee": 1}
 
     assert [(r["source"], r["status"]) for r in runs] == [("shopee", "ok")]
 

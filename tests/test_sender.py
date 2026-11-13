@@ -22,10 +22,11 @@ from achados.sender import (
     is_paused,
     replace_groups,
     saved_groups,
+    set_auto,
     set_paused,
 )
 from achados.service import create_app
-from achados.workflow import recent_sends
+from achados.workflow import recent_sends, record_send
 from tests.test_service import AUTH, FakeCollector, FakeLock, add_product, settings
 
 # Hoje às 12:00 em Brasília. Relativo ao relógio porque `recent_sends` (carência de 7 dias) usa a hora de verdade.
@@ -331,10 +332,12 @@ def test_cliente_separa_erro_permanente_de_erro_que_passa():
 # --- API ------------------------------------------------------------------------------
 
 
-def make_sender_app(sessions, client):
+def make_sender_app(sessions, client, shopee_client=None, **overrides):
     scheduler = CollectScheduler(sessions, FakeLock(), FakeCollector, "mercadolivre", interval=6 * 3600, startup_delay=3600, enabled=False)
     idle = SendWorker(sessions, FakeLock(), None)  # sem cliente o laço não roda: o teste manda só pelo endpoint
-    return create_app(settings(), sessions=sessions, scheduler=scheduler, sender_client=client, send_worker=idle)
+    return create_app(
+        settings(**overrides), sessions=sessions, scheduler=scheduler, sender_client=client, send_worker=idle, shopee_client=shopee_client
+    )
 
 
 def ready_offer(db):
@@ -397,3 +400,312 @@ def test_api_pausa_e_retoma(sessions, db):
 
     assert paused["paused"] is True and paused["pause_reason"] == "pausado no painel"
     assert resumed["paused"] is False and resumed["pause_reason"] == ""
+
+
+# --- envio automático ---------------------------------------------------------------------
+# Pontuações com estes preços (histórico de 40 dias a R$ 500): 250 -> 100, 350 -> 82, 400 -> 65, 450 -> não é oferta.
+
+
+def auto_offer(db, external_id, title, price, *, source="mercadolivre", seller=None) -> Product:
+    add_product(db, external_id, title, [(40, "500"), (3, price)], original="500", seller=seller)
+    product = db.scalars(select(Product).where(Product.external_id == external_id)).one()
+    product.source = source
+    product.affiliate_url = f"https://meli.la/{external_id}" if source == "mercadolivre" else f"https://s.shopee.com.br/{external_id}"
+    db.commit()
+    return product
+
+
+def seed_auto(db) -> dict[str, Product]:
+    """Uma oferta do ML (100), uma da Shopee (82) e uma do ML abaixo do corte padrão de 70 (65)."""
+    return {
+        "ml": auto_offer(db, "ml:1", "Kimono Jiu Jitsu Koral", "250"),
+        "shopee": auto_offer(db, "1.2", "Kimono Jiu Jitsu Shopee", "350", source="shopee"),
+        "baixa": auto_offer(db, "ml:3", "Kimono Jiu Jitsu Atama", "400"),
+    }
+
+
+def auto_worker(sessions, *, cap=30, candidates=None, interval=300.0):
+    """Um worker com o `candidates` do serviço de verdade; o relógio é o de `clock`."""
+    clock = [NOON]
+    if candidates is None:
+        candidates = make_sender_app(sessions, FakeClient()).state.sender_candidates
+    worker = SendWorker(
+        sessions,
+        FakeLock(),
+        FakeClient(),
+        daily_cap=cap,
+        window=(8, 22),
+        candidates=candidates,
+        auto_interval=interval,
+        auto_default_min_score=70,
+        clock=lambda: clock[0],
+    )
+    return worker, clock
+
+
+def queued_products(db) -> list[int]:
+    return [j.product_id for j in jobs(db) if j.status == "queued"]
+
+
+def test_auto_desligado_nao_enfileira_e_e_o_padrao(sessions, db):
+    seed_auto(db)
+    replace_groups(db, [("g1@g.us", "G1")])
+    db.commit()
+    worker, _ = auto_worker(sessions)
+
+    assert worker.auto_enqueue() == 0
+    assert jobs(db) == []
+
+
+def test_auto_sem_funcao_de_candidatas_nao_faz_nada(sessions, db):
+    seed_auto(db)
+    replace_groups(db, [("g1@g.us", "G1")])
+    set_auto(db, True)
+    db.commit()
+    bare = SendWorker(sessions, FakeLock(), FakeClient(), clock=lambda: NOON)
+
+    assert bare.auto_enqueue() == 0
+    assert jobs(db) == []
+
+
+def test_auto_enfileira_so_o_que_passa_do_corte_na_ordem_de_pontuacao_das_duas_fontes(sessions, db):
+    products = seed_auto(db)
+    replace_groups(db, [("g1@g.us", "G1")])
+    set_auto(db, True)  # corte padrão: 70
+    db.commit()
+    worker, _ = auto_worker(sessions)
+
+    assert worker.auto_enqueue() == 2
+
+    assert queued_products(db) == [products["ml"].id, products["shopee"].id]  # 100 antes de 82; o 65 fica de fora
+    first, second = jobs(db)
+    assert "Kimono Jiu Jitsu Koral" in first.text and "https://meli.la/ml:1" in first.text
+    assert "https://s.shopee.com.br/1.2" in second.text and first.price == Decimal("250")
+
+
+def test_auto_usa_o_corte_guardado(sessions, db):
+    products = seed_auto(db)
+    replace_groups(db, [("g1@g.us", "G1")])
+    set_auto(db, True, 60)
+    db.commit()
+    worker, _ = auto_worker(sessions)
+
+    worker.auto_enqueue()
+
+    assert queued_products(db) == [products["ml"].id, products["shopee"].id, products["baixa"].id]
+
+
+def test_auto_um_job_por_grupo_escolhido(sessions, db):
+    seed_auto(db)
+    replace_groups(db, [("g1@g.us", "G1"), ("g2@g.us", "G2")])
+    set_auto(db, True)
+    db.commit()
+    worker, _ = auto_worker(sessions)
+
+    assert worker.auto_enqueue() == 2
+
+    assert [j.chat_id for j in jobs(db)] == ["g1@g.us", "g2@g.us"] * 2
+
+
+def test_auto_respeita_pausa_grupos_e_janela(sessions, db):
+    seed_auto(db)
+    set_auto(db, True)
+    db.commit()
+    worker, clock = auto_worker(sessions, interval=0)
+
+    assert worker.auto_enqueue() == 0  # sem grupos escolhidos
+    replace_groups(db, [("g1@g.us", "G1")])
+    set_paused(db, True, "teste")
+    db.commit()
+    assert worker.auto_enqueue() == 0  # pausado
+    set_paused(db, False)
+    db.commit()
+    clock[0] = NOON.replace(hour=2)  # 23:00 em Brasília
+    assert worker.auto_enqueue() == 0  # fora da janela de horário
+    assert jobs(db) == []
+
+    clock[0] = NOON
+    assert worker.auto_enqueue() == 2
+
+
+def test_auto_nao_duplica_e_so_procura_a_cada_intervalo(sessions, db):
+    seed_auto(db)
+    replace_groups(db, [("g1@g.us", "G1")])
+    set_auto(db, True)
+    db.commit()
+    worker, clock = auto_worker(sessions)
+
+    assert worker.auto_enqueue() == 2
+    clock[0] = NOON + timedelta(minutes=10)
+    assert worker.auto_enqueue() == 0  # as duas já estão na fila
+    assert len(jobs(db)) == 2
+
+    auto_offer(db, "ml:4", "Kimono Jiu Jitsu Novo", "250")
+    clock[0] += timedelta(seconds=10)
+    assert worker.auto_enqueue() == 0  # procurou há 10s: espera o intervalo
+    clock[0] += timedelta(minutes=6)
+    assert worker.auto_enqueue() == 1
+
+
+def test_auto_pula_o_que_ja_entrou_na_fila_a_mao_ou_ja_foi_enviado(sessions, db):
+    products = seed_auto(db)
+    replace_groups(db, [("g1@g.us", "G1")])
+    enqueue_offer(db, products["ml"], "manual", None)
+    record_send(db, products["shopee"])  # enviada agora: dentro da carência de 7 dias
+    set_auto(db, True, 0)
+    db.commit()
+    worker, _ = auto_worker(sessions)
+
+    assert worker.auto_enqueue() == 1
+
+    assert queued_products(db) == [products["ml"].id, products["baixa"].id]
+
+
+def test_auto_pula_o_modelo_que_ja_tem_outro_tamanho_na_fila(sessions, db):
+    a2 = auto_offer(db, "ml:a2", "Kimono Jiu Jitsu Torah Tamanho A2", "350", seller=7)
+    a3 = auto_offer(db, "ml:a3", "Kimono Jiu Jitsu Torah Tamanho A3", "300", seller=7)  # o representante do modelo
+    replace_groups(db, [("g1@g.us", "G1")])
+    enqueue_offer(db, a2, "manual", None)
+    set_auto(db, True)
+    db.commit()
+    worker, _ = auto_worker(sessions)
+
+    assert worker.auto_enqueue() == 0
+    assert queued_products(db) == [a2.id] and a3.id not in queued_products(db)
+
+
+def test_auto_nao_repoe_o_que_foi_cancelado_ou_falhou_ha_pouco(sessions, db):
+    products = seed_auto(db)
+    replace_groups(db, [("g1@g.us", "G1")])
+    set_auto(db, True)
+    db.commit()
+    worker, clock = auto_worker(sessions, interval=0)
+    worker.auto_enqueue()
+    cancelled, failed = jobs(db)
+    cancelled.status, cancelled.error = "cancelled", "preço subiu"
+    failed.status = "failed"
+    db.commit()
+
+    clock[0] += timedelta(minutes=10)
+    assert worker.auto_enqueue() == 0  # preço que subiu / cancelado no painel não volta a cada ciclo
+
+    for job in jobs(db):  # passou a carência
+        job.created_at = datetime.now(timezone.utc) - timedelta(days=2)
+    db.commit()
+    clock[0] += timedelta(minutes=10)
+    assert worker.auto_enqueue() == 2
+    assert queued_products(db) == [products["ml"].id, products["shopee"].id]
+
+
+def test_auto_nao_passa_do_limite_diario_contando_grupos_enviadas_e_fila(sessions, db):
+    products = seed_auto(db)
+    replace_groups(db, [("g1@g.us", "G1"), ("g2@g.us", "G2")])  # uma oferta custa 2 mensagens
+    set_auto(db, True, 0)
+    db.commit()
+    worker, clock = auto_worker(sessions, cap=5, interval=0)
+
+    assert worker.auto_enqueue() == 2  # 5 -> 3 -> 1: a terceira não cabe
+    assert queued_products(db) == [products["ml"].id] * 2 + [products["shopee"].id] * 2
+
+    # mensagens já enviadas hoje também contam; a fila cheia fecha o orçamento
+    db.add(SendJob(product_id=products["ml"].id, chat_id="g1@g.us", text="x", price=Decimal("1"), status="sent", sent_at=NOON))
+    db.commit()
+    clock[0] += timedelta(minutes=10)
+    assert worker.auto_enqueue() == 0  # 5 - 1 enviada - 4 na fila = 0
+
+
+def test_auto_com_limite_so_para_uma_oferta(sessions, db):
+    products = seed_auto(db)
+    replace_groups(db, [("g1@g.us", "G1")])
+    db.add(SendJob(product_id=products["baixa"].id, chat_id="g1@g.us", text="x", price=Decimal("1"), status="sent", sent_at=NOON))
+    set_auto(db, True, 0)
+    db.commit()
+    worker, _ = auto_worker(sessions, cap=2)  # 1 enviada hoje: sobra uma mensagem
+
+    assert worker.auto_enqueue() == 1
+    assert queued_products(db) == [products["ml"].id]
+
+
+def test_auto_erro_ao_buscar_candidatas_nao_derruba_o_robo(sessions, db):
+    seed_auto(db)
+    replace_groups(db, [("g1@g.us", "G1")])
+    set_auto(db, True)
+    db.commit()
+
+    def boom(min_score):
+        raise RuntimeError("banco lento")
+
+    worker, _ = auto_worker(sessions, candidates=boom)
+
+    assert worker.auto_enqueue() == 0
+    assert jobs(db) == []
+
+
+def test_auto_o_job_automatico_passa_pela_conferencia_de_preco_do_ml(sessions, db):
+    products = seed_auto(db)
+    replace_groups(db, [("g1@g.us", "G1")])
+    set_auto(db, True)
+    db.commit()
+    worker, clock = auto_worker(sessions)
+    worker._checker = FakeChecker("999")  # o ML subiu o preço desde a coleta
+    worker.auto_enqueue()
+
+    worker.step()  # o primeiro job é o do ML (100)
+
+    ml_job = jobs(db)[0]
+    assert (ml_job.product_id, ml_job.status) == (products["ml"].id, "cancelled") and "preço subiu" in ml_job.error
+
+
+# --- API do envio automático ---------------------------------------------------------------
+
+
+def test_api_auto_comeca_desligado_e_o_get_do_painel_traz_o_estado(sessions, db):
+    with TestClient(make_sender_app(sessions, FakeClient())) as client:
+        auto = client.get("/api/sender/auto", headers=AUTH)
+        overview = client.get("/api/sender", headers=AUTH).json()
+        anonymous = client.get("/api/sender/auto")
+
+    assert auto.json() == {"enabled": False, "min_score": 70, "default_min_score": 70}
+    assert overview["auto"] == {"enabled": False, "min_score": 70}
+    assert anonymous.status_code == 401
+
+
+def test_api_liga_muda_o_corte_e_null_mantem(sessions, db):
+    with TestClient(make_sender_app(sessions, FakeClient(), sender_auto_min_score=55)) as client:
+        assert client.get("/api/sender/auto", headers=AUTH).json()["min_score"] == 55  # o padrão vem da configuração
+        on = client.put("/api/sender/auto", json={"enabled": True, "min_score": 80}, headers=AUTH)
+        keep = client.put("/api/sender/auto", json={"enabled": True, "min_score": None}, headers=AUTH)
+        off = client.put("/api/sender/auto", json={"enabled": False}, headers=AUTH)
+        overview = client.get("/api/sender", headers=AUTH).json()
+
+    assert on.json() == {"enabled": True, "min_score": 80, "default_min_score": 55}
+    assert keep.json() == {"enabled": True, "min_score": 80, "default_min_score": 55}
+    assert off.json() == {"enabled": False, "min_score": 80, "default_min_score": 55}
+    assert overview["auto"] == {"enabled": False, "min_score": 80}
+
+
+@pytest.mark.parametrize("body", [{"enabled": True, "min_score": 101}, {"enabled": True, "min_score": -1}, {"min_score": 70}, {"enabled": "talvez"}])
+def test_api_auto_recusa_corpo_invalido(sessions, body):
+    with TestClient(make_sender_app(sessions, FakeClient())) as client:
+        response = client.put("/api/sender/auto", json=body, headers=AUTH)
+        state = client.get("/api/sender/auto", headers=AUTH).json()
+
+    assert response.status_code == 422 and state["enabled"] is False
+
+
+def test_api_auto_exige_token(sessions):
+    with TestClient(make_sender_app(sessions, FakeClient())) as client:
+        assert client.put("/api/sender/auto", json={"enabled": True}).status_code == 401
+
+
+def test_api_o_corte_guardado_vale_para_as_candidatas_do_servico(sessions, db):
+    products = seed_auto(db)
+    app = make_sender_app(sessions, FakeClient())
+
+    with TestClient(app) as client:
+        client.put("/api/sender/auto", json={"enabled": True, "min_score": 90}, headers=AUTH)
+        client.put("/api/sender/groups", json={"groups": [{"id": "g1@g.us", "name": "G1"}]}, headers=AUTH)
+    worker, _ = auto_worker(sessions, candidates=app.state.sender_candidates)
+
+    assert worker.auto_enqueue() == 1
+    assert queued_products(db) == [products["ml"].id]  # só o de 100

@@ -130,3 +130,21 @@ def test_um_tamanho_so_ou_sem_lista_fica_igual_ao_formato_de_sempre():
 
     assert format_offer_message(**base) == format_offer_message(**base, sizes=[("A1", Decimal("250"))])
     assert "📏" not in format_offer_message(**base)
+
+
+def test_linha_de_publicidade_vem_antes_de_tudo_e_vale_para_os_dois_formatos():
+    com_oferta = format_offer_message(
+        title="Kimono Torah", price=250, link="https://meli.la/A", is_offer=True, reference_price=400, real_discount_pct=37,
+        ad_label="#publi · link de afiliado",
+    )
+    simples = format_offer_message(title="Faixa Azul", price=40, link="https://meli.la/B", ad_label="#publi · link de afiliado")
+
+    assert com_oferta.startswith("#publi · link de afiliado\n\n🔥 *Kimono Torah*")
+    assert simples == "#publi · link de afiliado\n\n*Faixa Azul*\n\n💰 R$ 40,00\n\n👉 https://meli.la/B"
+
+
+def test_sem_rotulo_a_mensagem_continua_igual():
+    base = dict(title="Faixa Azul", price=40, link="https://meli.la/B")
+
+    assert format_offer_message(**base) == format_offer_message(**base, ad_label="") == format_offer_message(**base, ad_label="   ")
+    assert format_offer_message(**base).startswith("*Faixa Azul*")

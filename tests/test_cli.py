@@ -108,3 +108,31 @@ def test_check_shopee_bloqueado_sem_rede_e_lista_vazia(capsys):
 
     empty = {"data": {"productOfferV2": {"nodes": [], "pageInfo": {}}}}
     assert run_check_shopee(shopee_with(lambda r: httpx.Response(200, json=empty))) == 1
+
+
+def shopee_with_link(link_response):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if b"generateShortLink" in request.content:
+            return link_response
+        return shopee_ok(request)
+
+    return shopee_with(handler)
+
+
+def test_check_shopee_short_link_gera_o_link_com_sub_ids(capsys):
+    ok = httpx.Response(200, json={"data": {"generateShortLink": {"shortLink": "https://s.shopee.com.br/xyz"}}})
+
+    assert run_check_shopee(shopee_with_link(ok), short_link=True) == 0
+    assert "https://s.shopee.com.br/xyz" in capsys.readouterr().out
+
+
+def test_check_shopee_short_link_mostra_o_erro_da_api(capsys):
+    erro = httpx.Response(200, json={"errors": [{"message": "bad origin"}]})
+
+    assert run_check_shopee(shopee_with_link(erro), short_link=True) == 2
+    assert "link curto" in capsys.readouterr().out
+
+
+def test_check_shopee_sem_a_flag_nao_gera_link(capsys):
+    assert run_check_shopee(shopee_with_link(httpx.Response(500))) == 0
+    assert "link curto" not in capsys.readouterr().out

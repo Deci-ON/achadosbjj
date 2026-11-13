@@ -94,6 +94,12 @@ Sem isto, o fluxo é "Copiar mensagem" e colar. Com o robô (`sender/`, [whatsap
 
 O que o código faz para reduzir o risco (e não elimina): só envia o que você aprovou com "Enviar aos grupos" (a fila nunca se enche sozinha), intervalo aleatório entre mensagens (`SENDER_MIN/MAX_DELAY_SECONDS`), limite por dia (`SENDER_DAILY_CAP`, cada grupo conta uma) e janela de horário de Brasília, pausa sozinho depois de 3 falhas seguidas, e **confere o preço no ML logo antes de mandar**: cancela se subiu mais de 3% ou se o anúncio sumiu.
 
+**Envio automático (opcional, desligado):** na aba Envio, o interruptor faz o robô enfileirar sozinho as ofertas prontas (ML com link colado e Shopee) com pontuação a partir do corte (padrão 70), uma por modelo, da melhor para a pior, dentro da janela de horário e do limite diário. Um envio cancelado ou que falhou não volta sozinho por 24 h. Ofertas da Shopee não passam pela conferência de preço antes de sair (a do ML passa).
+
+**Identificação de publicidade:** toda mensagem começa com `#publi · link de afiliado` (`MESSAGE_AD_LABEL`; vazio tira a linha). O guia do CONAR (afiliado com link rastreável é publicidade) e os termos do Mercado Afiliados (item 5.1) pedem essa identificação em primeiro plano; a Shopee orienta o mesmo. Cadastre também o canal de WhatsApp como mídia nos dois programas: divulgação em mídia não cadastrada não gera comissão. Os termos do ML falam em evitar "disparo massivo de mensagens" e em robôs, e não ficou claro se o envio automatizado de links se enquadra: vale perguntar ao suporte do Mercado Afiliados.
+
+**Links da Shopee por grupo:** ao enfileirar uma oferta da Shopee, cada grupo recebe um link curto próprio (`generateShortLink` com os sub-ids `wa` e um identificador do grupo). O relatório de conversão da Shopee devolve esse sub-id em `utmContent`, e a aba Envio mostra pedidos e comissão estimada por grupo (`GET /api/sender/performance`, em cache por 15 min: a API só deixa repetir o período a cada 30 s e guarda 3 meses). Se a Shopee falhar ao gerar o link, a mensagem sai com o link comum. Teste na VPS com `docker compose exec app achados check-shopee --short-link` (cria um link de verdade na sua conta). O formato exato do `utmContent` não está na documentação: o parser aceita qualquer separador, mas confirme com a primeira venda real. O Mercado Livre não tem isso: o link vem do gerador, e dá para separar por etiqueta (limite de 100, sem exclusão), então só por tipo de grupo.
+
 Ligar na VPS:
 
 ```bash

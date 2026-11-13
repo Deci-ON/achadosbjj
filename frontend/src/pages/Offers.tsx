@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { api, type Offer, type OffersResponse, type Status } from "../api";
 import { CopyButton, ErrorBox, PendingLinksBanner, ScoreBadge, SendToBotButton, SentToggle, SizeChips, Spinner, StatusBadge } from "../components";
-import { STATUS_HINT, STATUS_LABEL, dateTimeLabel, money, relative } from "../format";
+import { SOURCE_LABEL, STATUS_HINT, STATUS_LABEL, dateTimeLabel, money, relative } from "../format";
 
 type Tab = Status | "ready";
 
@@ -17,6 +17,8 @@ function isTab(value: string | null): value is Tab {
   return TABS.includes(value as Tab);
 }
 
+const SOURCES = Object.keys(SOURCE_LABEL);
+
 function OfferCard({ offer, canSend, onChanged }: { offer: Offer; canSend: boolean; onChanged: () => void }) {
   const drop = offer.real_discount_pct ?? 0;
   return (
@@ -30,6 +32,9 @@ function OfferCard({ offer, canSend, onChanged }: { offer: Offer; canSend: boole
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={offer.status} label={STATUS_LABEL[offer.status]} />
           <ScoreBadge score={offer.score} />
+          <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium text-slate-600 ring-1 ring-inset ring-slate-300">
+            {SOURCE_LABEL[offer.source] ?? offer.source}
+          </span>
           {offer.affiliate_url ? (
             <span className="text-xs text-emerald-700">link de afiliado ✓</span>
           ) : (
@@ -82,6 +87,7 @@ export function Offers() {
   const [params, setParams] = useSearchParams();
   const tab: Tab = isTab(params.get("status")) ? (params.get("status") as Tab) : "ready";
   const q = params.get("q") ?? "";
+  const source = SOURCES.includes(params.get("source") ?? "") ? (params.get("source") as string) : "";
   const minScore = Number(params.get("min") ?? 0) || 0;
 
   const [search, setSearch] = useState(q);
@@ -118,14 +124,14 @@ export function Offers() {
     let cancelled = false;
     setLoading(true);
     api
-      .offers({ status: tab, q, minScore })
+      .offers({ status: tab, source, q, minScore })
       .then((body) => !cancelled && (setData(body), setError("")))
       .catch((exc: Error) => !cancelled && setError(exc.message))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [tab, q, minScore, reloadKey]);
+  }, [tab, source, q, minScore, reloadKey]);
 
   const count = (t: Tab) => (t === "ready" ? data?.ready : data?.counts[t]) ?? "";
 
@@ -158,6 +164,21 @@ export function Offers() {
           placeholder="Buscar no título (ex.: koral azul)"
           className="w-full max-w-sm rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-slate-900"
         />
+        <label className="flex items-center gap-2 text-sm text-slate-600">
+          Loja
+          <select
+            value={source}
+            onChange={(e) => update({ source: e.target.value })}
+            className="rounded-md border border-slate-300 bg-white px-2 py-1"
+          >
+            <option value="">Todas</option>
+            {SOURCES.map((s) => (
+              <option key={s} value={s}>
+                {SOURCE_LABEL[s]}
+              </option>
+            ))}
+          </select>
+        </label>
         <label className="flex items-center gap-2 text-sm text-slate-600">
           Score mínimo
           <select
