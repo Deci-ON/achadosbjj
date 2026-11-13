@@ -163,6 +163,16 @@ def test_recover_interrupted_fecha_so_as_que_estavam_rodando(sessions, db):
     assert "reiniciou" in erro.error and erro.finished_at is not None
 
 
+def test_recover_interrupted_com_fonte_nao_fecha_a_coleta_em_andamento_da_outra(sessions, db):
+    add_run(db, "running", source="mercadolivre")  # o ML está coletando agora
+    add_run(db, "running", source="shopee")  # a coleta da Shopee ficou pendurada de uma queda
+
+    assert recover_interrupted(sessions, now=T0, source="shopee") == 1
+
+    por_fonte = {r.source: r.status for r in db.scalars(select(CollectRun))}
+    assert por_fonte == {"mercadolivre": "running", "shopee": "error"}
+
+
 def test_last_success_at_ignora_erros_e_outras_lojas(sessions, db):
     add_run(db, "ok", T0 - timedelta(hours=9))
     add_run(db, "ok", T0 - timedelta(hours=2))

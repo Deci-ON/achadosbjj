@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     collect_startup_delay_seconds: float = 30.0
     collect_preset: str = "bjj"
     static_dir: str = ""  # pasta do front compilado (Vite); vazia = só a API
+    # Coleta agendada da Shopee (API de afiliados). Só roda com SHOPEE_APP_ID e SHOPEE_SECRET definidos.
+    shopee_collect_enabled: bool = True
+    shopee_collect_interval_seconds: float = 21600.0  # 6h, como o ML
     # Só ofertas do ML com pontuação >= isto entram na fila de links (a geração do link é um clique seu).
     # 60 ~ queda de uns 23% sobre a mediana (17% se o "de" do vendedor foi praticado); 0 = todas as ofertas.
     link_min_score: int = 60

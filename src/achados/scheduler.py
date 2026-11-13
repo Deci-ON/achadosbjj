@@ -127,16 +127,19 @@ class LeaderLock:
                 self._conn = None
 
 
-def recover_interrupted(sessions: sessionmaker[Session], now: datetime | None = None) -> int:
+def recover_interrupted(sessions: sessionmaker[Session], now: datetime | None = None, source: str | None = None) -> int:
     """Fecha como erro as coletas que ficaram `running` (processo morreu no meio).
 
     Só o líder pode chamar: em outro worker isso mataria uma coleta que está de fato rodando.
+    Com `source`, só as dessa fonte: com um agendador por fonte, o de uma não pode fechar a coleta
+    em andamento da outra.
     """
     with sessions() as session:
+        query = update(CollectRun).where(CollectRun.status == "running")
+        if source is not None:
+            query = query.where(CollectRun.source == source)
         result = session.execute(
-            update(CollectRun)
-            .where(CollectRun.status == "running")
-            .values(status="error", error="interrompida: o processo reiniciou", finished_at=now or utcnow())
+            query.values(status="error", error="interrompida: o processo reiniciou", finished_at=now or utcnow())
         )
         session.commit()
         return result.rowcount or 0
@@ -210,7 +213,7 @@ class CollectScheduler:
         if not self.state.is_leader:
             return LEADER_RETRY_SECONDS
         if not was_leader:
-            fixed = await asyncio.to_thread(recover_interrupted, self._sessions)
+            fixed = await asyncio.to_thread(recover_interrupted, self._sessions, None, self._source)
             if fixed:
                 log.warning("%d coleta(s) interrompida(s) marcadas como erro", fixed)
 

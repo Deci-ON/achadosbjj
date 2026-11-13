@@ -165,7 +165,7 @@ Limite atual: a API do ML com token `client_credentials` só enxerga produtos de
 
 | Fonte | Como coleta | Validado contra a loja real? |
 |---|---|---|
-| Shopee | API GraphQL de afiliados (`productOfferV2`), com assinatura SHA256 | **Não.** Faltam credenciais; testado só com respostas simuladas |
+| Shopee | API GraphQL de afiliados (`productOfferV2`), com assinatura SHA256; agendada a cada 6 h (`SHOPEE_COLLECT_*`) quando `SHOPEE_APP_ID` e `SHOPEE_SECRET` existem; `achados check-shopee` testa sem gravar | **Sim, em parte.** Em 2026-11-12 `check-shopee` devolveu 5 produtos reais com comissão (3%) e `offerLink`; a coleta completa e o histórico de preço ainda não foram observados |
 | Mercado Livre (`collect mercadolivre`) | API oficial, fluxo `client_credentials`: `/highlights` (mais vendidos por categoria) + `/products/{id}` + `/products/{id}/items` | **Sim**, com o token real; os testes usam respostas reais em `tests/fixtures/ml_*.json` |
 | Mercado Livre (`collect mercadolivre-html`) | HTML da listagem (`/ofertas`), cards `poly-card` | **Não.** O ML exige login (`account-verification`) até no navegador; o parser foi escrito contra uma fixture feita à mão |
 

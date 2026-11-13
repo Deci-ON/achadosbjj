@@ -278,6 +278,72 @@ def test_post_collect_recusa_quando_ja_ha_coleta(sessions):
     assert response.status_code == 409 and "andamento" in response.json()["detail"]
 
 
+# --- Shopee agendada ---------------------------------------------------------
+
+
+class ShopeeFakeCollector:
+    source = "shopee"
+
+    def collect(self):
+        yield Offer(
+            source="shopee",
+            external_id="1.2",
+            title="Kimono Jiu Jitsu Shopee",
+            url="https://shopee.com.br/x",
+            affiliate_url="https://s.shopee.com.br/abc",
+            price=Decimal("200"),
+        )
+
+
+def make_shopee_app(sessions, **overrides):
+    shopee = CollectScheduler(sessions, FakeLock(), ShopeeFakeCollector, "shopee", interval=6 * 3600, startup_delay=3600)
+    ml = CollectScheduler(sessions, FakeLock(), FakeCollector, "mercadolivre", interval=6 * 3600, startup_delay=3600)
+    return create_app(settings(**overrides), sessions=sessions, scheduler=ml, shopee_scheduler=shopee)
+
+
+def test_shopee_so_e_agendada_com_as_credenciais(sessions):
+    with TestClient(make_app(sessions)) as client:
+        sem = client.get("/api/status", headers=AUTH).json()
+    with TestClient(make_app(sessions, shopee_app_id="app", shopee_secret="segredo")) as client:
+        com = client.get("/api/status", headers=AUTH).json()
+    with TestClient(make_app(sessions, shopee_app_id="app", shopee_secret="segredo", shopee_collect_enabled=False)) as client:
+        desligada = client.get("/api/status", headers=AUTH).json()
+
+    assert sem["shopee_scheduler"] is None and desligada["shopee_scheduler"] is None
+    assert com["shopee_scheduler"]["enabled"] is True
+
+
+def test_post_collect_da_shopee_roda_so_a_coleta_da_shopee(sessions):
+    with TestClient(make_shopee_app(sessions)) as client:
+        assert wait_until(lambda: client.get("/api/status", headers=AUTH).json()["shopee_scheduler"]["is_leader"])
+
+        response = client.post("/api/collect", params={"source": "shopee"}, headers=AUTH)
+        assert response.status_code == 202
+        assert wait_until(lambda: client.get("/api/status", headers=AUTH).json()["products"] == {"shopee": 1})
+        runs = client.get("/api/status", headers=AUTH).json()["recent_runs"]
+
+    assert [(r["source"], r["status"]) for r in runs] == [("shopee", "ok")]
+
+
+def test_post_collect_da_shopee_recusa_quando_ela_nao_esta_ligada(sessions):
+    with TestClient(make_app(sessions)) as client:
+        response = client.post("/api/collect", params={"source": "shopee"}, headers=AUTH)
+
+    assert response.status_code == 409 and "Shopee" in response.json()["detail"]
+
+
+def test_oferta_da_shopee_nasce_pronta_porque_o_link_vem_da_api(sessions, db):
+    add_product(db, "1.2", "Kimono Jiu Jitsu Shopee", [(40, "500"), (3, "300")])
+    product = db.scalars(select(Product)).one()
+    product.source, product.affiliate_url = "shopee", "https://s.shopee.com.br/abc"
+    db.commit()
+
+    with TestClient(make_app(sessions)) as client:
+        body = client.get("/api/offers", params={**OFFERS, "ready": "true"}, headers=AUTH).json()
+
+    assert [(i["source"], i["ready"], i["affiliate_origin"], i["needs_link"]) for i in body["items"]] == [("shopee", True, "api", False)]
+
+
 # --- painel: campos novos, detalhe do produto, busca ---------------------
 
 

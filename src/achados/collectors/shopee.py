@@ -40,6 +40,18 @@ query ProductOffers($keyword: String, $page: Int, $limit: Int, $sortType: Int) {
 """.strip()
 
 
+# Palavras do nicho. A busca da Shopee mistura judô e infantil; a regra de nicho (`scoring.BJJ_RULES`) exige
+# "jiu jitsu"/BJJ/rash guard no título, então o resto é descartado na pontuação, não aqui.
+BJJ_KEYWORDS = [
+    "kimono jiu jitsu",
+    "kimono bjj",
+    "kimono trancado jiu jitsu",
+    "faixa jiu jitsu",
+    "rash guard jiu jitsu",
+    "bermuda jiu jitsu",
+]
+
+
 class ShopeeAPIError(CollectorError):
     pass
 
@@ -155,3 +167,10 @@ def parse_node(node: dict) -> Offer | None:
         sales=int(node["sales"]) if node.get("sales") is not None else None,
         raw=node,
     )
+
+
+def build_collector(settings, keywords: list[str | None] | None = None) -> ShopeeCollector:
+    """Coletor da Shopee pronto para o agendamento (preset de jiu-jitsu), a partir de `SHOPEE_*`."""
+    http = httpx.Client(timeout=settings.request_timeout)
+    client = ShopeeClient(settings.shopee_app_id, settings.shopee_secret, settings.shopee_api_url, http=http)
+    return ShopeeCollector(client, keywords=keywords or list(BJJ_KEYWORDS), max_pages=3, limit=50, sort_type=SORT_RELEVANCE)

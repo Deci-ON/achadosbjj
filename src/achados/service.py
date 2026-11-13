@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from achados.affiliate import effective_link, validate_affiliate_url
 from achados.collectors.mercadolivre_api import PRESETS, MercadoLivreAPI, build_collector
+from achados.collectors.shopee import build_collector as build_shopee_collector
 from achados.config import Settings, get_settings
 from achados.db import make_engine, make_session_factory
 from achados.frontend import mount_frontend
@@ -216,6 +217,7 @@ def create_app(
     *,
     sessions: sessionmaker[Session] | None = None,
     scheduler: CollectScheduler | None = None,
+    shopee_scheduler: CollectScheduler | None = None,
     sender_client: SenderClient | None = None,
     send_worker: SendWorker | None = None,
 ) -> FastAPI:
@@ -224,18 +226,33 @@ def create_app(
     if sessions is None:
         sessions = make_session_factory(make_engine())
     engine = sessions.kw["bind"]
+    collect_lock = LeaderLock(engine)  # um lock só: o agendador do ML e o da Shopee rodam no mesmo worker líder
     if scheduler is None:
         if settings.collect_preset not in PRESETS:  # falha na subida, não só na primeira coleta
             raise ValueError(f"COLLECT_PRESET desconhecido: {settings.collect_preset!r} (disponíveis: {PRESETS})")
         scheduler = CollectScheduler(
             sessions,
-            LeaderLock(engine),
+            collect_lock,
             lambda: build_collector(settings, settings.collect_preset, sessions),
             "mercadolivre",
             interval=settings.collect_interval_seconds,
             startup_delay=settings.collect_startup_delay_seconds,
             enabled=settings.collect_enabled,
         )
+
+    if shopee_scheduler is None and settings.shopee_collect_enabled and settings.shopee_app_id and settings.shopee_secret:
+        shopee_scheduler = CollectScheduler(
+            sessions,
+            collect_lock,
+            lambda: build_shopee_collector(settings),
+            "shopee",
+            interval=settings.shopee_collect_interval_seconds,
+            # Depois do ML: as duas coletas não começam juntas e dividem a VPS.
+            startup_delay=settings.collect_startup_delay_seconds + 120,
+            enabled=True,
+        )
+
+    schedulers = {"mercadolivre": scheduler, **({"shopee": shopee_scheduler} if shopee_scheduler else {})}
 
     if sender_client is None and settings.sender_url:
         sender_client = SenderClient(settings.sender_url, settings.sender_token)
@@ -268,14 +285,14 @@ def create_app(
         Base.metadata.create_all(engine)  # idempotente; poupa um `init-db` manual
         if not settings.admin_token:
             log.warning("ADMIN_TOKEN não definido: os endpoints /api/* responderão 503")
-        loop_task = asyncio.create_task(scheduler.run(), name="collect-scheduler")
-        send_task = asyncio.create_task(send_worker.run(), name="send-worker")
+        tasks = [asyncio.create_task(s.run(), name=f"collect-scheduler-{name}") for name, s in schedulers.items()]
+        tasks.append(asyncio.create_task(send_worker.run(), name="send-worker"))
         try:
             yield
         finally:
-            for task in (loop_task, send_task):
+            for task in tasks:
                 task.cancel()
-            for task in (loop_task, send_task):
+            for task in tasks:
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
 
@@ -299,19 +316,22 @@ def create_app(
 
     @app.get("/api/status", dependencies=[Depends(require_admin)])
     def status():
-        state = scheduler.state
-        with sessions() as session:
-            runs = session.scalars(select(CollectRun).order_by(CollectRun.id.desc()).limit(5)).all()
-            products = dict(session.execute(select(Product.source, func.count()).group_by(Product.source)).all())
-        return {
-            "scheduler": {
+        def describe(state):
+            return {
                 "enabled": state.enabled,
                 "is_leader": state.is_leader,
                 "running": state.running,
                 "consecutive_failures": state.consecutive_failures,
                 "last_error": state.last_error,
                 "next_due": state.next_due,
-            },
+            }
+
+        with sessions() as session:
+            runs = session.scalars(select(CollectRun).order_by(CollectRun.id.desc()).limit(5)).all()
+            products = dict(session.execute(select(Product.source, func.count()).group_by(Product.source)).all())
+        return {
+            "scheduler": describe(scheduler.state),
+            "shopee_scheduler": describe(shopee_scheduler.state) if shopee_scheduler else None,
             "products": products,
             "recent_runs": [
                 {
@@ -569,15 +589,18 @@ def create_app(
         return {"queued": queued}
 
     @app.post("/api/collect", status_code=202, dependencies=[Depends(require_admin)])
-    async def collect():
-        state = scheduler.state
+    async def collect(source: str = Query("mercadolivre", pattern="^(mercadolivre|shopee)$")):
+        chosen = schedulers.get(source)
+        if chosen is None:
+            raise HTTPException(409, "a Shopee não está ligada (SHOPEE_APP_ID e SHOPEE_SECRET, SHOPEE_COLLECT_ENABLED)")
+        state = chosen.state
         if not state.enabled:
             raise HTTPException(409, "agendador desligado (COLLECT_ENABLED=false)")
         if not state.is_leader:
             raise HTTPException(409, "este worker não é o líder da coleta")
-        if scheduler.busy:
+        if chosen.busy:
             raise HTTPException(409, "já existe uma coleta em andamento")
-        task = asyncio.create_task(scheduler.collect_now(), name="manual-collect")
+        task = asyncio.create_task(chosen.collect_now(), name=f"manual-collect-{source}")
         manual_tasks.add(task)  # referência forte: o loop só guarda referência fraca
         task.add_done_callback(manual_tasks.discard)
         return {"status": "started"}
