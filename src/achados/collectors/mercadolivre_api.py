@@ -8,7 +8,7 @@ import httpx
 from achados.collectors.base import BlockedError, CollectorError
 from achados.probes import DbProbeCache, ProbeCache
 from achados.schemas import Offer
-from achados.scoring import normalize
+from achados.scoring import BJJ_RULES, check_niche, normalize
 
 log = logging.getLogger("achados")
 
@@ -32,11 +32,15 @@ DEFAULT_CATEGORIES = {
 # Preset de BJJ. Categorias e domínios vêm de /sites/MLB/domain_discovery/search; rash guard e bermuda
 # caem em categorias genéricas (MLB-SPORT_T_SHIRTS, MLB-SHORTS), sem produtos de catálogo úteis.
 BJJ_CATEGORIES = ["MLB47731", "MLB277803"]  # Kimonos; Faixas
-BJJ_DOMAINS = ("MLB-MARTIAL_ARTS_UNIFORMS", "MLB-MARTIAL_ARTS_BELTS")
+# Tatame: o ML o põe no domínio dos tatames de bebê/brincar, então só a regra de nicho (`scoring.BJJ_RULES.combos`) separa os de luta.
+BJJ_DOMAINS = ("MLB-MARTIAL_ARTS_UNIFORMS", "MLB-MARTIAL_ARTS_BELTS", "MLB-BABY_PLAY_AND_FOAM_MATS")
 # Lista fixa: as de maior rendimento num experimento com ~35 palavras (produtos novos com oferta por palavra:
 # kimono pretorian 56, faixa jiu jitsu preta 52, kimono torah 43, reforçado 38, venum 27, shiroi 26...). Fica
 # de fora "kimono judo" (traz judô, que o filtro de título descarta) e luva/protetor bucal (MMA, não BJJ).
 # As marcas e variações que mudam com o tempo vêm de /trends (ver BJJ_TREND_LIMIT).
+# Domínios que misturam nichos (o dos tatames traz tatame de bebê, didático e de ginástica): o título passa pela regra de
+# nicho ANTES de consultar as ofertas, para não gastar uma chamada em 136 de 148 produtos que a pontuação descartaria.
+TITLE_FILTERED_DOMAINS = ("MLB-BABY_PLAY_AND_FOAM_MATS",)
 BJJ_KEYWORDS = [
     "kimono jiu jitsu",
     "kimono bjj",
@@ -59,6 +63,9 @@ BJJ_KEYWORDS = [
     "faixa jiu jitsu roxa",
     "faixa jiu jitsu marrom",
     "faixa jiu jitsu infantil",
+    "tatame jiu jitsu",
+    "tatame bjj",
+    "tatame eva jiu jitsu",
 ]
 BJJ_TREND_LIMIT = 30  # palavras novas por coleta vindas de /trends
 
@@ -71,7 +78,7 @@ BJJ_KEYWORD_ANCHORS = ("jiu jitsu", "jiujitsu", "bjj", "kimono", "quimono", "ras
 BJJ_KEYWORD_MARKERS = ("jiu jitsu", "jiujitsu", "bjj")  # citar o esporte salva "kimono judo jiu jitsu"
 BJJ_KEYWORD_OTHER_SPORTS = ("judo", "karate", "taekwondo", "dobok", "muay", "boxe", "kendo", "capoeira")
 BJJ_KEYWORD_REJECT = (
-    "caneca", "boneco", "cabide", "usado", "tatame", "mochila", "bolsa", "chaveiro", "adesivo", "miniatura",
+    "caneca", "boneco", "cabide", "usado", "mochila", "bolsa", "chaveiro", "adesivo", "miniatura",
     "brinquedo", "pelucia",
 )  # fmt: skip
 
@@ -283,6 +290,9 @@ class MercadoLivreApiCollector:
             results = (body or {}).get("results", [])
             for product in results:
                 if self._domains is None or product.get("domain_id") in self._domains:
+                    domain = product.get("domain_id")
+                    if domain in TITLE_FILTERED_DOMAINS and check_niche(product.get("name", ""), domain, BJJ_RULES):
+                        continue
                     yield product
             if len(results) < SEARCH_PAGE_SIZE:
                 break

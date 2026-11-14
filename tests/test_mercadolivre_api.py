@@ -335,7 +335,8 @@ def test_busca_filtra_por_dominio_do_nicho():
     # 4 uniformes + 1 faixa; a caneca (MLB-MUGS) nem chega a ter as ofertas consultadas.
     assert len(offers) == 5
     assert "/products/MLB60127635/items" not in fake.calls
-    assert {o.raw["domain_id"] for o in offers} == set(BJJ_DOMAINS)
+    # Só os dois domínios de kimono e faixa têm produto no fixture; o do tatame entra no preset sem aparecer aqui.
+    assert {o.raw["domain_id"] for o in offers} == {"MLB-MARTIAL_ARTS_UNIFORMS", "MLB-MARTIAL_ARTS_BELTS"} <= set(BJJ_DOMAINS)
     assert fake.search_params[0]["q"] == "kimono jiu jitsu" and fake.search_params[0]["status"] == "active"
 
 
@@ -664,3 +665,25 @@ def test_sem_categorias_de_trends_nao_chama_o_endpoint():
     list(search_collector(fake, keywords=["kimono"]).collect())
 
     assert not any(c.startswith("/trends") for c in fake.calls)
+
+
+def test_dominio_do_tatame_passa_pelo_titulo_antes_de_gastar_a_chamada_de_ofertas():
+    from achados.collectors.mercadolivre_api import TITLE_FILTERED_DOMAINS
+
+    mats = TITLE_FILTERED_DOMAINS[0]
+    products = [
+        {"id": "MLB1", "name": "Tatame Eva 20mm Academia Jiu Jitsu 1x1", "domain_id": mats},
+        {"id": "MLB2", "name": "Kit 12 Tatame Infantil Colorido 50x50", "domain_id": mats},  # bebê/didático
+        {"id": "MLB3", "name": "Kimono Jiu Jitsu Torah", "domain_id": "MLB-MARTIAL_ARTS_UNIFORMS"},  # domínio sem filtro de título
+    ]
+
+    def handler(request):
+        if request.url.path == "/oauth/token":
+            return httpx.Response(200, json={"access_token": "t", "expires_in": 3600})
+        return httpx.Response(200, json={"results": products})
+
+    collector = MercadoLivreApiCollector(
+        make_api(handler), categories=[], keywords=["tatame jiu jitsu"], domains=(mats, "MLB-MARTIAL_ARTS_UNIFORMS"), sleep=lambda s: None
+    )
+
+    assert [p["id"] for p in collector._search("tatame jiu jitsu")] == ["MLB1", "MLB3"]

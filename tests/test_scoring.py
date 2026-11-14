@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+import pytest
+
 from achados.scoring import (
     IRRELEVANT,
     LEARNING,
@@ -155,3 +157,33 @@ def test_preco_estavel_ou_em_alta_nao_e_oferta():
 
 def test_sem_regras_de_nicho_o_titulo_nao_importa():
     assert run([(40, "100"), (3, "70")], title="Qualquer coisa", rules=None).status == OFFER
+
+
+# --- tatame --------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Tatame Eva 20mm Profissional 3 Placas Academia Jiu Jitsu 1x1 Bicolor",
+        "Kit 2 Tatame Tapete Eva Luta Jiu-jitsu Academia Tatame 1x1 30mm Duplo Preto/azul",
+        "Tatame Eva Linha Premium Academia Luta Jiu 50x50x4cm 40mm Cor Amarelo",  # luta + "Jiu", sem "jiu jitsu"
+        "Tatame Em Rolo Artes Marciais (300x120x30mm) Cor Azul-escuro",
+    ],
+)
+def test_tatame_de_luta_entra_no_nicho(title):
+    assert check_niche(title, "MLB-BABY_PLAY_AND_FOAM_MATS") is None
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Tatame de encaixe para bebê Tatame EVA 1m² Premium vermelho",  # exclusão: bebê
+        "Kit 12 Peças De Mini Tatame Eva Didatico Ludico Colorido Laranja",
+        "Kit 12 Tatame Infantil Colorido 50x50x1cm Tatame Eva Premium Lisa",
+        "Tatame Eva 1x1 10mm 100x100x1cm Academia Pilates Ginastica Preto",
+        "Luva de luta profissional",  # "luta" sem "tatame" não vale como contexto
+    ],
+)
+def test_tatame_de_bebe_didatico_ou_ginastica_fica_de_fora(title):
+    assert check_niche(title, "MLB-BABY_PLAY_AND_FOAM_MATS") is not None

@@ -70,6 +70,8 @@ BJJ_KEYWORDS = [
     "faixa jiu jitsu",
     "rash guard jiu jitsu",
     "bermuda jiu jitsu",
+    "tatame jiu jitsu",
+    "tatame luta",
 ]
 
 

@@ -35,6 +35,8 @@ class NicheRules:
     exclude: tuple[str, ...] = ()
     allowed_domains: tuple[str, ...] = ()
     excluded_domains: tuple[str, ...] = ()
+    # (palavra, (contextos...)): a palavra sozinha não prova o nicho, mas junto de um dos contextos sim.
+    combos: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 # O domínio MLB-MARTIAL_ARTS_UNIFORMS mistura jiu-jitsu, judô, caratê e taekwondo (medido em 2026-10-23:
@@ -73,6 +75,9 @@ BJJ_RULES = NicheRules(
         "dobok",
     ),
     excluded_domains=("MLB-MUGS", "MLB-BABY_SWIMWEAR"),
+    # Tatame: o domínio do ML (MLB-BABY_PLAY_AND_FOAM_MATS) mistura tatame de luta, de bebê e de ginástica/pilates, e
+    # muito título de luta não cita "jiu jitsu" ("Tatame Eva ... Luta Jiu 50x50"). Só entra com contexto de luta.
+    combos=(("tatame", ("luta", "lutas", "jiu", "artes marciais", "dojo")),),
 )
 
 
@@ -125,7 +130,9 @@ def check_niche(title: str, domain_id: str | None, rules: NicheRules = BJJ_RULES
         return f"palavra de exclusão: {word!r}"
     if domain_id and domain_id in rules.allowed_domains:
         return None
-    if _contains(text, rules.include) is None:
+    if _contains(text, rules.include) is None and not any(
+        _contains(text, (word,)) and _contains(text, context) for word, context in rules.combos
+    ):
         return "nenhuma palavra do nicho no título"
     return None
 
