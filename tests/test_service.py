@@ -302,9 +302,9 @@ def test_post_collect_recusa_quando_ja_ha_coleta(sessions):
 # --- identificação de publicidade --------------------------------------------
 
 
-def test_a_mensagem_pronta_comeca_com_a_identificacao_de_publicidade_por_padrao(sessions, db):
+def test_a_identificacao_de_publicidade_e_opcional_e_vem_desligada(sessions, db):
     seed_offers(db)
-    assert Settings(_env_file=None).message_ad_label == "#publi · link de afiliado"  # o padrão de produção é ligado
+    assert Settings(_env_file=None).message_ad_label == ""  # desligada por padrão: o dono da conta liga com MESSAGE_AD_LABEL
 
     with TestClient(make_app(sessions, message_ad_label="#publi · link de afiliado")) as client:
         body = client.get("/api/offers", params=OFFERS, headers=AUTH).json()

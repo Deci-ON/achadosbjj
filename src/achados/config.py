@@ -40,9 +40,10 @@ class Settings(BaseSettings):
     # Envio automático (opcional; o painel liga, desligado por padrão): o robô enfileira sozinho as ofertas prontas.
     sender_auto_min_score: int = 70  # corte de pontuação inicial (o painel pode mudar e fica guardado no banco)
     sender_auto_interval_seconds: float = 300.0  # de quanto em quanto tempo procura candidatas
-    # Primeira linha de toda mensagem de oferta: identifica publicidade (CONAR; termos do Mercado Afiliados, 5.1).
-    # Vazio desliga a linha. Os termos do ML falam em hashtags do guia do CONAR: #publi ou #publicidade.
-    message_ad_label: str = "#publi · link de afiliado"
+    # Primeira linha opcional de toda mensagem de oferta, para identificar publicidade. Desligada por padrão (vazio).
+    # Para ligar: MESSAGE_AD_LABEL="#publi · link de afiliado". (Os termos do Mercado Afiliados, item 5.1, falam em
+    # hashtags do guia do CONAR, como #publi ou #publicidade: é decisão do dono da conta.)
+    message_ad_label: str = ""
     admin_token: str = ""  # sem ele, os endpoints /api/* respondem 503 (nunca ficam abertos por esquecimento)
 
 
