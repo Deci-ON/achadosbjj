@@ -59,9 +59,11 @@ def test_conversion_report_pagina_por_scroll_id_ate_acabar():
     sent = []
 
     def handler(request):
-        variables = json.loads(request.content)["variables"]
-        sent.append(variables)
-        if variables["scrollId"] is None:
+        body = json.loads(request.content)
+        query = body["query"]
+        sent.append(query)
+        assert body["variables"] == {}  # argumentos inline: a API rejeitou as variaveis (Int64 / "wrong type")
+        if "scrollId:" not in query:  # (o campo scrollId de pageInfo nao tem dois pontos)
             page = {"nodes": [{"conversionId": 1}], "pageInfo": {"hasNextPage": True, "scrollId": "tok1"}}
         else:
             page = {"nodes": [{"conversionId": 2}], "pageInfo": {"hasNextPage": False, "scrollId": None}}
@@ -70,7 +72,8 @@ def test_conversion_report_pagina_por_scroll_id_ate_acabar():
     nodes = make_client(handler).conversion_report(100, 200)
 
     assert [n["conversionId"] for n in nodes] == [1, 2]
-    assert [v["scrollId"] for v in sent] == [None, "tok1"] and sent[0]["start"] == 100 and sent[0]["limit"] == 500
+    assert "purchaseTimeStart: 100, purchaseTimeEnd: 200, limit: 500)" in sent[0] and "scrollId:" not in sent[0]
+    assert 'scrollId: "tok1"' in sent[1]
 
 
 # --- link por grupo na fila ------------------------------------------------------------------

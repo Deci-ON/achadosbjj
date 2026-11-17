@@ -43,9 +43,11 @@ query ProductOffers($keyword: String, $page: Int, $limit: Int, $sortType: Int) {
 """.strip()
 
 
+# Os argumentos vão inline (como na documentação da Shopee e no generateShortLink): com variáveis a API devolveu
+# primeiro "Int onde se espera Int64" e, com `Int64`, "10010 wrong type". `scrollId` só entra a partir da 2ª página.
 CONVERSION_QUERY = """
-query Conversions($start: Int64, $end: Int64, $limit: Int, $scrollId: String) {
-  conversionReport(purchaseTimeStart: $start, purchaseTimeEnd: $end, limit: $limit, scrollId: $scrollId) {
+query {
+  conversionReport(%(args)s) {
     nodes {
       conversionId
       purchaseTime
@@ -142,8 +144,10 @@ class ShopeeClient:
         nodes: list[dict] = []
         scroll_id = None
         for _ in range(max_pages):
-            variables = {"start": start, "end": end, "limit": limit, "scrollId": scroll_id}
-            data = self.query(CONVERSION_QUERY, variables)["conversionReport"]
+            args = f"purchaseTimeStart: {int(start)}, purchaseTimeEnd: {int(end)}, limit: {int(limit)}"
+            if scroll_id:
+                args += f", scrollId: {json.dumps(scroll_id)}"
+            data = self.query(CONVERSION_QUERY % {"args": args}, {})["conversionReport"]
             nodes += data.get("nodes") or []
             info = data.get("pageInfo") or {}
             if not info.get("hasNextPage") or not info.get("scrollId"):
