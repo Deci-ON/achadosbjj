@@ -55,6 +55,7 @@ services:
       # Vazio de propósito: o compose interpola isto mesmo com o perfil desligado, e `:?` quebraria todo
       # `up`/`config`. O robô recusa subir sem token (sender/index.js).
       SENDER_TOKEN: ${SENDER_TOKEN:-}
+      SENDER_DEBUG: ${SENDER_DEBUG:-} # 1 = o log mostra o que o Chromium escreve (diagnóstico de "iniciando" eterno)
     volumes:
       - senderdata:/data # a sessão do WhatsApp: sem ele o QR seria pedido a cada reinício
     shm_size: 256m

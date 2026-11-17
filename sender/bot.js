@@ -52,16 +52,22 @@ function createBot({ dataDir = "/data", executablePath } = {}) {
     puppeteer: {
       executablePath,
       headless: true,
+      // SENDER_DEBUG=1 no .env do sender: despeja no log tudo o que o Chromium escreve (erros de rede, crash, etc.).
+      dumpio: process.env.SENDER_DEBUG === "1",
       args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--no-zygote"],
     },
   });
+
+  // Marcos do arranque no log: sem eles, "iniciando" para sempre não diz em que passo travou.
+  client.on("loading_screen", (percent, message) => console.log(`carregando o WhatsApp Web: ${percent}% ${message || ""}`));
+  client.on("change_state", (s) => console.log(`estado do WhatsApp Web: ${s}`));
 
   client.on("qr", async (raw) => {
     state = "qr";
     qr = await QRCode.toDataURL(raw, { margin: 1, width: 280 });
     console.log("QR code novo: abra o painel (aba Envio) e leia com o WhatsApp do número do robô");
   });
-  client.on("authenticated", () => ((state = "authenticated"), (qr = null)));
+  client.on("authenticated", () => ((state = "authenticated"), (qr = null), console.log("autenticado: sincronizando")));
   client.on("ready", () => ((state = "ready"), (qr = null), console.log("WhatsApp conectado")));
   client.on("auth_failure", (msg) => ((state = "disconnected"), console.error("falha de autenticação:", msg)));
   client.on("disconnected", (reason) => ((state = "disconnected"), console.error("desconectado:", reason)));
