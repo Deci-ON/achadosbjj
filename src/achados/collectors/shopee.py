@@ -44,7 +44,7 @@ query ProductOffers($keyword: String, $page: Int, $limit: Int, $sortType: Int) {
 
 
 CONVERSION_QUERY = """
-query Conversions($start: Int, $end: Int, $limit: Int, $scrollId: String) {
+query Conversions($start: Int64, $end: Int64, $limit: Int, $scrollId: String) {
   conversionReport(purchaseTimeStart: $start, purchaseTimeEnd: $end, limit: $limit, scrollId: $scrollId) {
     nodes {
       conversionId
