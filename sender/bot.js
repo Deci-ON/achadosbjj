@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { execFileSync } = require("child_process");
 const QRCode = require("qrcode");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 const { HttpError } = require("./server");
@@ -36,6 +37,20 @@ function clearStaleLocks(dir) {
   return removed;
 }
 
+// O whatsapp-web.js se apresenta ao WhatsApp como "Chrome 101 no Mac" (um User-Agent de 2022 fixo na biblioteca),
+// mas o navegador de verdade é um Chromium atual: o WhatsApp vê um Chrome que não existe mais. Usa-se o User-Agent
+// de um Chrome comum com a MESMA versão do Chromium instalado. SENDER_USER_AGENT no .env sobrescreve.
+function chromiumUserAgent(executablePath) {
+  try {
+    const out = execFileSync(executablePath || "chromium", ["--version"], { encoding: "utf8", timeout: 15000 });
+    const major = (out.match(/(\d+)\.\d+\.\d+\.\d+/) || [])[1];
+    if (major) return `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+  } catch (err) {
+    console.warn("não consegui ler a versão do Chromium:", err.message);
+  }
+  return undefined; // cai no padrão da biblioteca
+}
+
 function createBot({ dataDir = "/data", executablePath } = {}) {
   let state = "starting"; // starting | qr | authenticated | ready | disconnected
   let qr = null;
@@ -47,7 +62,11 @@ function createBot({ dataDir = "/data", executablePath } = {}) {
     if (state === "starting") console.warn("ainda iniciando depois de 2 min: o Chromium não respondeu (veja se há erro acima)");
   }, 120000).unref();
 
+  const userAgent = process.env.SENDER_USER_AGENT || chromiumUserAgent(executablePath);
+  console.log(`User-Agent do navegador: ${userAgent || "(padrão da biblioteca: Chrome 101 no Mac)"}`);
+
   const client = new Client({
+    userAgent,
     authStrategy: new LocalAuth({ dataPath: dataDir }),
     puppeteer: {
       executablePath,
@@ -59,7 +78,16 @@ function createBot({ dataDir = "/data", executablePath } = {}) {
   });
 
   // Marcos do arranque no log: sem eles, "iniciando" para sempre não diz em que passo travou.
-  client.on("loading_screen", (percent, message) => console.log(`carregando o WhatsApp Web: ${percent}% ${message || ""}`));
+  // O evento `authenticated` do whatsapp-web.js 1.34.x só sai quando a sincronização inicial termina (é emitido em
+  // onAppStateHasSyncedEvent), então entre ler o QR e a sincronização acabar o painel ficaria mostrando o QR já
+  // usado. A tela de carregamento do WhatsApp Web só aparece depois do pareamento: dali em diante não é mais QR.
+  client.on("loading_screen", (percent, message) => {
+    console.log(`carregando o WhatsApp Web: ${percent}% ${message || ""}`);
+    if (state === "starting" || state === "qr") {
+      state = "authenticated";
+      qr = null;
+    }
+  });
   client.on("change_state", (s) => console.log(`estado do WhatsApp Web: ${s}`));
 
   client.on("qr", async (raw) => {
@@ -70,7 +98,13 @@ function createBot({ dataDir = "/data", executablePath } = {}) {
   client.on("authenticated", () => ((state = "authenticated"), (qr = null), console.log("autenticado: sincronizando")));
   client.on("ready", () => ((state = "ready"), (qr = null), console.log("WhatsApp conectado")));
   client.on("auth_failure", (msg) => ((state = "disconnected"), console.error("falha de autenticação:", msg)));
-  client.on("disconnected", (reason) => ((state = "disconnected"), console.error("desconectado:", reason)));
+  client.on("disconnected", (reason) => {
+    state = "disconnected";
+    console.error("desconectado:", reason);
+    if (reason === "LOGOUT") {
+      console.error("o WhatsApp encerrou a sessão deste aparelho (a biblioteca apaga o login e o contêiner reinicia pedindo QR novo)");
+    }
+  });
 
   client.initialize().catch((err) => {
     state = "disconnected";
