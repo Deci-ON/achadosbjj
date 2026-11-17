@@ -340,11 +340,17 @@ export function Sender() {
         {overview.worker.last_error && <p className="text-xs text-slate-500">Último aviso do robô: {overview.worker.last_error}</p>}
       </section>
 
+      {connection.state === "ready" ? (
+        <GroupPicker selected={overview.groups.map((g) => g.id)} onSaved={load} />
+      ) : (
+        <p className="rounded-lg bg-white p-4 text-sm text-slate-600 ring-1 ring-slate-200">
+          A lista de grupos para marcar aparece aqui assim que o WhatsApp estiver conectado (estado "conectado" acima).
+        </p>
+      )}
+
       <AutoSendCard initial={overview.auto} onChanged={load} />
 
       <SalesByGroupCard />
-
-      {connection.state === "ready" && <GroupPicker selected={overview.groups.map((g) => g.id)} onSaved={load} />}
 
       <section className="space-y-2">
         <h2 className="font-semibold">Fila e envios recentes</h2>

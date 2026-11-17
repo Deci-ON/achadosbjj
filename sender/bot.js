@@ -1,12 +1,51 @@
 // Liga o whatsapp-web.js ao contrato que o server.js espera. Número dedicado: o login (QR) fica em /data.
 
+const fs = require("fs");
+const path = require("path");
 const QRCode = require("qrcode");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 const { HttpError } = require("./server");
 
+// O Chromium deixa SingletonLock/SingletonCookie/SingletonSocket no perfil. Se o contêiner reinicia sem fechar o
+// navegador, o lock sobra e o Chromium novo acha que o perfil está em uso: o robô fica em "iniciando" para sempre.
+// Só existe um Chromium por contêiner, então ao subir qualquer lock que sobrou é lixo.
+function clearStaleLocks(dir) {
+  let removed = 0;
+  const walk = (d, depth) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = path.join(d, entry.name);
+      if (/^Singleton(Lock|Cookie|Socket)$/.test(entry.name)) {
+        try {
+          fs.rmSync(full, { force: true });
+          removed += 1;
+        } catch {
+          // sem permissão: o Chromium vai reclamar no log
+        }
+      } else if (entry.isDirectory() && depth < 4) {
+        walk(full, depth + 1);
+      }
+    }
+  };
+  walk(dir, 0);
+  return removed;
+}
+
 function createBot({ dataDir = "/data", executablePath } = {}) {
   let state = "starting"; // starting | qr | authenticated | ready | disconnected
   let qr = null;
+
+  const stale = clearStaleLocks(dataDir);
+  if (stale) console.log(`removi ${stale} trava(s) antiga(s) do Chromium em ${dataDir}`);
+  console.log("iniciando o navegador do WhatsApp...");
+  setTimeout(() => {
+    if (state === "starting") console.warn("ainda iniciando depois de 2 min: o Chromium não respondeu (veja se há erro acima)");
+  }, 120000).unref();
 
   const client = new Client({
     authStrategy: new LocalAuth({ dataPath: dataDir }),
