@@ -51,6 +51,7 @@ services:
     build: ./sender
     profiles: ["sender"]
     restart: unless-stopped
+    init: true # o Chromium deixa processos filhos órfãos: o init do Docker os recolhe
     environment:
       # Vazio de propósito: o compose interpola isto mesmo com o perfil desligado, e `:?` quebraria todo
       # `up`/`config`. O robô recusa subir sem token (sender/index.js).

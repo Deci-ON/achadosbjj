@@ -19,7 +19,7 @@ const STATE_LABEL: Record<string, string> = {
   qr: "aguardando a leitura do QR code",
   authenticated: "autenticado, carregando…",
   ready: "conectado",
-  disconnected: "desconectado",
+  stopped: "PARADO (não reconecta sozinho)",
 };
 
 const JOB_STYLE: Record<SenderJob["status"], string> = {
@@ -327,6 +327,15 @@ export function Sender() {
         </div>
         {overview.paused && <p className="text-sm text-amber-800">Pausado: {overview.pause_reason || "sem motivo registrado"}.</p>}
         {connection.error && <p className="text-sm text-rose-700">{connection.error}</p>}
+        {connection.state === "stopped" && (
+          <div className="space-y-1 text-sm text-rose-700">
+            <p>Motivo: {connection.reason || "não informado"}.</p>
+            <p className="text-slate-600">
+              O robô não tenta de novo sozinho (cada nova tentativa de login conta contra o número). Use "Copiar mensagem" enquanto isso. Para tentar de novo, na VPS:{" "}
+              <code className="rounded bg-slate-100 px-1">docker compose exec sender rm -f /data/halted.json &amp;&amp; docker compose restart sender</code>
+            </p>
+          </div>
+        )}
         {connection.state === "qr" && connection.qr && (
           <div>
             <p className="text-sm text-slate-600">No celular do número do robô: WhatsApp → Aparelhos conectados → Conectar um aparelho.</p>

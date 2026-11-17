@@ -110,6 +110,8 @@ docker compose logs -f sender    # confira que subiu
 
 Depois, no painel, aba **Envio**: leia o QR code com o WhatsApp do número do robô, escolha os grupos e use "Enviar aos grupos" nas ofertas prontas. A sessão fica no volume `senderdata` (reiniciar não pede QR de novo). O `sender` não publica porta: só o `app` fala com ele. Se o número for banido, tire o `COMPOSE_PROFILES=sender` e volte ao copiar e colar.
 
+**O robô nunca se reconecta sozinho.** Qualquer desconexão (`LOGOUT`, conflito, falha de login, erro antes de conectar) deixa o robô em `PARADO` e grava `/data/halted.json`: nem um reinício do contêiner reabre o WhatsApp, porque cada pareamento ou reconexão que falha parece, para o WhatsApp, um aparelho ligando e desligando em ciclo (foi o que bloqueou o primeiro número). QR que ninguém leu em ~4 min também para o robô, mas sem marcador. Para tentar de novo, só quando você decidir: `docker compose exec sender rm -f /data/halted.json && docker compose restart sender`. Primeira conexão: tire os aparelhos antigos de Aparelhos conectados no celular, suba o `sender`, leia o QR **uma vez** e não mexa por 10 minutos; comece com `SENDER_DAILY_CAP=5` e o envio automático desligado.
+
 O Chromium do robô usa memória e CPU: meça com `docker stats` antes de deixar ligado (a VPS divide recursos com o tibiascope).
 
 ### CLI (continua disponível)

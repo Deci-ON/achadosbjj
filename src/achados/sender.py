@@ -93,7 +93,7 @@ class SenderClient:
         return response.json()
 
     def status(self) -> dict:
-        """{'state': starting | qr | authenticated | ready | disconnected, 'qr': data URL ou None}."""
+        """{'state': starting | qr | authenticated | ready | stopped, 'qr': data URL ou None, 'reason': motivo da parada}."""
         return self._call("GET", "/status")
 
     def groups(self) -> list[dict]:

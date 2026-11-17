@@ -6,6 +6,7 @@ const { execFileSync } = require("child_process");
 const QRCode = require("qrcode");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 const { HttpError } = require("./server");
+const { createLifecycle, readHalt } = require("./lifecycle");
 
 // O Chromium deixa SingletonLock/SingletonCookie/SingletonSocket no perfil. Se o contêiner reinicia sem fechar o
 // navegador, o lock sobra e o Chromium novo acha que o perfil está em uso: o robô fica em "iniciando" para sempre.
@@ -52,71 +53,52 @@ function chromiumUserAgent(executablePath) {
 }
 
 function createBot({ dataDir = "/data", executablePath } = {}) {
-  let state = "starting"; // starting | qr | authenticated | ready | disconnected
-  let qr = null;
+  const life = createLifecycle({ dataDir, renderQr: (raw) => QRCode.toDataURL(raw, { margin: 1, width: 280 }) });
 
-  const stale = clearStaleLocks(dataDir);
-  if (stale) console.log(`removi ${stale} trava(s) antiga(s) do Chromium em ${dataDir}`);
-  console.log("iniciando o navegador do WhatsApp...");
-  setTimeout(() => {
-    if (state === "starting") console.warn("ainda iniciando depois de 2 min: o Chromium não respondeu (veja se há erro acima)");
-  }, 120000).unref();
+  // Parou antes (LOGOUT, conflito, erro): nem abre o navegador. Só o dono retoma (ver lifecycle.js).
+  let client = null;
+  const previousHalt = readHalt(dataDir);
+  if (previousHalt) {
+    life.startStopped(previousHalt);
+  } else {
+    const stale = clearStaleLocks(dataDir);
+    if (stale) console.log(`removi ${stale} trava(s) antiga(s) do Chromium em ${dataDir}`);
+    console.log("iniciando o navegador do WhatsApp...");
+    setTimeout(() => {
+      if (life.getState() === "starting") console.warn("ainda iniciando depois de 2 min: o Chromium não respondeu (veja se há erro acima)");
+    }, 120000).unref();
 
-  const userAgent = process.env.SENDER_USER_AGENT || chromiumUserAgent(executablePath);
-  console.log(`User-Agent do navegador: ${userAgent || "(padrão da biblioteca: Chrome 101 no Mac)"}`);
+    const userAgent = process.env.SENDER_USER_AGENT || chromiumUserAgent(executablePath);
+    console.log(`User-Agent do navegador: ${userAgent || "(padrão da biblioteca: Chrome 101 no Mac)"}`);
 
-  const client = new Client({
-    userAgent,
-    authStrategy: new LocalAuth({ dataPath: dataDir }),
-    puppeteer: {
-      executablePath,
-      headless: true,
-      // SENDER_DEBUG=1 no .env do sender: despeja no log tudo o que o Chromium escreve (erros de rede, crash, etc.).
-      dumpio: process.env.SENDER_DEBUG === "1",
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--no-zygote"],
-    },
-  });
-
-  // Marcos do arranque no log: sem eles, "iniciando" para sempre não diz em que passo travou.
-  // O evento `authenticated` do whatsapp-web.js 1.34.x só sai quando a sincronização inicial termina (é emitido em
-  // onAppStateHasSyncedEvent), então entre ler o QR e a sincronização acabar o painel ficaria mostrando o QR já
-  // usado. A tela de carregamento do WhatsApp Web só aparece depois do pareamento: dali em diante não é mais QR.
-  client.on("loading_screen", (percent, message) => {
-    console.log(`carregando o WhatsApp Web: ${percent}% ${message || ""}`);
-    if (state === "starting" || state === "qr") {
-      state = "authenticated";
-      qr = null;
-    }
-  });
-  client.on("change_state", (s) => console.log(`estado do WhatsApp Web: ${s}`));
-
-  client.on("qr", async (raw) => {
-    state = "qr";
-    qr = await QRCode.toDataURL(raw, { margin: 1, width: 280 });
-    console.log("QR code novo: abra o painel (aba Envio) e leia com o WhatsApp do número do robô");
-  });
-  client.on("authenticated", () => ((state = "authenticated"), (qr = null), console.log("autenticado: sincronizando")));
-  client.on("ready", () => ((state = "ready"), (qr = null), console.log("WhatsApp conectado")));
-  client.on("auth_failure", (msg) => ((state = "disconnected"), console.error("falha de autenticação:", msg)));
-  client.on("disconnected", (reason) => {
-    state = "disconnected";
-    console.error("desconectado:", reason);
-    if (reason === "LOGOUT") {
-      console.error("o WhatsApp encerrou a sessão deste aparelho (a biblioteca apaga o login e o contêiner reinicia pedindo QR novo)");
-    }
-  });
-
-  client.initialize().catch((err) => {
-    state = "disconnected";
-    console.error("não deu para iniciar o WhatsApp:", err.message);
-  });
+    client = new Client({
+      userAgent,
+      authStrategy: new LocalAuth({ dataPath: dataDir }),
+      // Sem cache local da página do WhatsApp Web: o padrão grava em ./.wwebjs_cache (a pasta do app, que o usuário
+      // sem root não pode escrever) e essa escrita falhava no meio do login. Sempre a versão atual, direto da web.
+      webVersionCache: { type: "none" },
+      // O QR troca a cada ~20 s; sem limite o robô ficaria gerando QR para sempre se ninguém lesse. ~4 min.
+      qrMaxRetries: 10,
+      puppeteer: {
+        executablePath,
+        headless: true,
+        // SENDER_DEBUG=1 no .env do sender: despeja no log tudo o que o Chromium escreve (erros de rede, crash, etc.).
+        dumpio: process.env.SENDER_DEBUG === "1",
+        args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--no-zygote"],
+      },
+    });
+    life.attach(client);
+    client.initialize().catch((err) => life.halt(`não deu para iniciar o WhatsApp: ${err?.message || err}`, { persist: false }));
+  }
 
   const requireReady = () => {
-    if (state !== "ready") throw new HttpError(503, `WhatsApp não está pronto (${state})`);
+    if (!life.isReady()) throw new HttpError(503, `WhatsApp não está pronto (${life.getState()})`);
   };
 
   return {
-    status: () => ({ state, qr }),
+    status: () => life.status(),
+    // Erro que ninguém tratou (index.js liga isto a unhandledRejection/uncaughtException).
+    fatal: (err) => life.fatal(err),
 
     async groups() {
       requireReady();
