@@ -60,8 +60,10 @@ services:
     volumes:
       - senderdata:/data # a sessão do WhatsApp: sem ele o QR seria pedido a cada reinício
     shm_size: 256m
-    # A VPS é limitada e divide com o tibiascope: o Chromium não passa disto.
-    mem_limit: 768m
+    # A VPS é limitada e divide com o tibiascope: o Chromium não passa disto. Parado ele usa ~450 MB, mas o
+    # carregamento do WhatsApp Web (sobretudo logo depois do pareamento) chega a ~800 MB: com 768 MB o Chromium
+    # engasgava relendo o disco (CPU 60%, ~11 GB lidos em minutos) e a página nunca terminava de iniciar.
+    mem_limit: ${SENDER_MEM_LIMIT:-1280m}
     cpus: 0.75
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]

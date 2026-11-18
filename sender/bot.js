@@ -7,6 +7,7 @@ const QRCode = require("qrcode");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 const { HttpError } = require("./server");
 const { createLifecycle, readHalt } = require("./lifecycle");
+const { watchPage } = require("./pagewatch");
 
 // O Chromium deixa SingletonLock/SingletonCookie/SingletonSocket no perfil. Se o contêiner reinicia sem fechar o
 // navegador, o lock sobra e o Chromium novo acha que o perfil está em uso: o robô fica em "iniciando" para sempre.
@@ -88,6 +89,7 @@ function createBot({ dataDir = "/data", executablePath } = {}) {
       },
     });
     life.attach(client);
+    watchPage(client, life);
     client.initialize().catch((err) => life.halt(`não deu para iniciar o WhatsApp: ${err?.message || err}`, { persist: false }));
   }
 
