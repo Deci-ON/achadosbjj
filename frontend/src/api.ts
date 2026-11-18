@@ -129,7 +129,7 @@ export interface StatusResponse {
 
 export interface SenderOverview {
   configured: boolean; // SENDER_URL definido
-  connection: { state: string; qr: string | null; error?: string; reason?: string | null }; // state: off | unreachable | starting | qr | authenticated | ready | stopped
+  connection: { state: string; qr: string | null; pairingCode?: string | null; error?: string; reason?: string | null }; // state: off | unreachable | starting | qr | authenticated | ready | stopped
   paused: boolean;
   pause_reason: string;
   daily_cap: number;

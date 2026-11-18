@@ -23,9 +23,9 @@ test("fluxo normal: QR, pareamento, pronto", async () => {
   assert.equal(life.getState(), "starting");
   client.emit("qr", "abc");
   await tick();
-  assert.deepEqual(life.status(), { state: "qr", qr: "data:abc", reason: null });
+  assert.deepEqual(life.status(), { state: "qr", qr: "data:abc", pairingCode: null, reason: null });
   client.emit("loading_screen", 10, "WhatsApp");
-  assert.deepEqual(life.status(), { state: "authenticated", qr: null, reason: null });
+  assert.deepEqual(life.status(), { state: "authenticated", qr: null, pairingCode: null, reason: null });
   client.emit("ready");
   assert.equal(life.isReady(), true);
 });
@@ -99,7 +99,7 @@ test("começar com marcador: estado parado e sem cliente", () => {
   fs.writeFileSync(path.join(dataDir, HALT_FILE), JSON.stringify({ reason: "LOGOUT", at: "2026-11-17T10:00:00Z" }));
   const life = createLifecycle({ dataDir, renderQr: async () => "", log: quiet });
   life.startStopped(readHalt(dataDir));
-  assert.deepEqual(life.status(), { state: "stopped", qr: null, reason: "LOGOUT" });
+  assert.deepEqual(life.status(), { state: "stopped", qr: null, pairingCode: null, reason: "LOGOUT" });
   assert.equal(life.isReady(), false);
 });
 
@@ -111,4 +111,14 @@ test("o destroy que falha não vira erro solto", async () => {
   life.halt("teste");
   await tick();
   assert.equal(life.isStopped(), true);
+});
+
+test("código de pareamento aparece no lugar do QR e some ao autenticar", () => {
+  const { life, client } = setup();
+  life.showPairingCode("ABCD-1234");
+  assert.deepEqual(life.status(), { state: "qr", qr: null, pairingCode: "ABCD-1234", reason: null });
+  client.emit("authenticated");
+  assert.equal(life.status().pairingCode, null);
+  life.showPairingCode("ZZZZ-0000"); // já autenticado: ignora
+  assert.equal(life.getState(), "authenticated");
 });

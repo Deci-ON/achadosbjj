@@ -57,6 +57,8 @@ services:
       # `up`/`config`. O robô recusa subir sem token (sender/index.js).
       SENDER_TOKEN: ${SENDER_TOKEN:-}
       SENDER_DEBUG: ${SENDER_DEBUG:-} # 1 = o log mostra o que o Chromium escreve (diagnóstico de "iniciando" eterno)
+      SENDER_ENGINE: ${SENDER_ENGINE:-wwebjs} # wwebjs (Chromium) ou baileys (sem navegador, ~100 MB)
+      SENDER_PAIRING_PHONE: ${SENDER_PAIRING_PHONE:-} # só Baileys: DDI+número, pareia por código em vez de QR
     volumes:
       - senderdata:/data # a sessão do WhatsApp: sem ele o QR seria pedido a cada reinício
     shm_size: 256m

@@ -336,6 +336,14 @@ export function Sender() {
             </p>
           </div>
         )}
+        {connection.state === "qr" && connection.pairingCode && (
+          <div>
+            <p className="text-sm text-slate-600">
+              No celular do número do robô: WhatsApp → Aparelhos conectados → Conectar um aparelho → <b>Conectar com número de telefone</b> e digite o código:
+            </p>
+            <p className="mt-2 font-mono text-3xl font-semibold tracking-widest">{connection.pairingCode}</p>
+          </div>
+        )}
         {connection.state === "qr" && connection.qr && (
           <div>
             <p className="text-sm text-slate-600">No celular do número do robô: WhatsApp → Aparelhos conectados → Conectar um aparelho.</p>

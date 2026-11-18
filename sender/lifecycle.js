@@ -26,6 +26,7 @@ function readHalt(dataDir) {
 function createLifecycle({ dataDir, renderQr, log = console }) {
   let state = "starting"; // starting | qr | authenticated | ready | stopped
   let qr = null;
+  let pairingCode = null; // pareamento por código (Baileys + SENDER_PAIRING_PHONE): aparece no painel no lugar do QR
   let reason = null;
   let client = null;
 
@@ -45,6 +46,7 @@ function createLifecycle({ dataDir, renderQr, log = console }) {
     if (halted()) return;
     state = "stopped";
     qr = null;
+    pairingCode = null;
     reason = why;
     log.error(`robô PARADO: ${why}. Não vai reconectar sozinho; ${RESUME_HINT}`);
     if (persist) writeMarker(why);
@@ -68,6 +70,7 @@ function createLifecycle({ dataDir, renderQr, log = console }) {
       if (state === "starting" || state === "qr") {
         state = "authenticated";
         qr = null;
+        pairingCode = null;
       }
     });
     cli.on("change_state", (s) => !halted() && log.log(`estado do WhatsApp Web: ${s}`));
@@ -87,12 +90,14 @@ function createLifecycle({ dataDir, renderQr, log = console }) {
       if (halted()) return;
       state = "authenticated";
       qr = null;
+      pairingCode = null;
       log.log("autenticado: sincronizando");
     });
     cli.on("ready", () => {
       if (halted()) return;
       state = "ready";
       qr = null;
+      pairingCode = null;
       log.log("WhatsApp conectado");
     });
     cli.on("auth_failure", (msg) => halt(`falha de autenticação: ${msg}`));
@@ -101,6 +106,15 @@ function createLifecycle({ dataDir, renderQr, log = console }) {
       if (why === QR_TIMEOUT) return halt("ninguém leu o QR a tempo", { persist: false });
       halt(why === "LOGOUT" ? "o WhatsApp encerrou a sessão deste aparelho (LOGOUT)" : `desconectado (${why})`);
     });
+  }
+
+  // Pareamento por código de 8 caracteres (WhatsApp → Aparelhos conectados → Conectar com número de telefone).
+  function showPairingCode(code) {
+    if (halted() || state === "authenticated" || state === "ready") return;
+    state = "qr";
+    qr = null;
+    pairingCode = code;
+    log.log(`código de pareamento ${code}: no celular, Aparelhos conectados → Conectar com número de telefone`);
   }
 
   // Erro que ninguém tratou (a biblioteca lança rejeições soltas ao re-injetar a página depois de um LOGOUT).
@@ -117,7 +131,8 @@ function createLifecycle({ dataDir, renderQr, log = console }) {
     halt,
     fatal,
     startStopped,
-    status: () => ({ state, qr, reason }),
+    showPairingCode,
+    status: () => ({ state, qr, pairingCode, reason }),
     isReady: () => state === "ready",
     isStopped: halted,
     getState: () => state,
