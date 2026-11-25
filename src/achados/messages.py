@@ -58,6 +58,12 @@ def _with_label(ad_label: str, text: str) -> str:
     return f"{ad_label.strip()}\n\n{text}" if ad_label.strip() else text
 
 
+# A API de afiliados da Shopee só entrega o preço de tabela (`priceMin`): o Pix e os cupons de loja que a página
+# mostra no preço em destaque não vêm em nenhum campo (conferido na documentação oficial em 2026-11-21). Sem este aviso
+# quem abre o link vê um preço diferente do da mensagem e acha que está errado.
+SHOPEE_PRICE_NOTE = "💳 Na página pode ter preço menor no Pix ou com cupom"
+
+
 def format_offer_message(
     *,
     title: str,
@@ -70,6 +76,7 @@ def format_offer_message(
     sizes: list[tuple[str, Decimal | float]] | None = None,
     ad_label: str = "",
     coupon_lines: list[str] | None = None,
+    price_note: str = "",
 ) -> str:
     """Texto pronto para colar no WhatsApp (negrito com *...*).
 
@@ -83,9 +90,11 @@ def format_offer_message(
     tamanhos; se os preços diferem, mostra "a partir de" e o preço de cada tamanho, e o desconto vira "até".
 
     `coupon_lines`: linhas de `coupon_line`, uma por cupom, logo antes da linha do link (nos dois formatos).
+    `price_note`: aviso de uma linha depois dos cupons e antes do link (ver `SHOPEE_PRICE_NOTE`); vazio = sem aviso.
     """
     name = clean_title(title)
-    coupons = "\n".join(line for line in (coupon_lines or []) if line)
+    note = price_note.strip()
+    coupons = "\n".join([line for line in (coupon_lines or []) if line] + ([note] if note else []))
     block = f"{coupons}\n\n" if coupons else ""
     if not (is_offer and reference_price and real_discount_pct):
         return _with_label(ad_label, f"*{name}*\n\n💰 {brl(price)}\n\n{block}👉 {link}")

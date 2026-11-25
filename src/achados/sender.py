@@ -134,6 +134,37 @@ class MlPriceChecker:
         return offer.price if offer else None
 
 
+class ShopeePriceChecker:
+    """Confere o preço na Shopee logo antes de mandar. O preço é o de tabela (`priceMin`), o mesmo que a coleta guarda:
+    o Pix e os cupons de loja não estão na API (por isso a mensagem leva o aviso `SHOPEE_PRICE_NOTE`)."""
+
+    def __init__(self, client: ShopeeClient):
+        self._client = client
+
+    @staticmethod
+    def _ids(product: Product) -> tuple[int, int] | None:
+        raw = product.raw or {}
+        try:
+            if raw.get("shopId") and raw.get("itemId"):
+                return int(raw["shopId"]), int(raw["itemId"])
+            shop, item = str(product.external_id).split(".", 1)  # a coleta guarda "<shopId>.<itemId>"
+            return int(shop), int(item)
+        except (ValueError, TypeError):
+            return None
+
+    def current_price(self, product: Product) -> Decimal | None:
+        ids = self._ids(product)
+        if ids is None:
+            return product.price  # sem como conferir: vale o que foi coletado (como no ML)
+        node = self._client.product_offer(*ids)
+        if node is None:
+            return None
+        try:
+            return Decimal(str(node["priceMin"]))
+        except (KeyError, ValueError, ArithmeticError) as exc:
+            raise SenderError("a Shopee não devolveu o preço do produto") from exc
+
+
 # --- configuração guardada ------------------------------------------------------
 
 
@@ -352,6 +383,7 @@ class SendWorker:
         max_delay: float = 180.0,
         window: tuple[int, int] = (8, 22),
         checker: PriceChecker | None = None,
+        shopee_checker: PriceChecker | None = None,
         candidates: Candidates | None = None,
         group_links: GroupLinks | None = None,
         auto_interval: float = 300.0,
@@ -368,6 +400,7 @@ class SendWorker:
         self._max_delay = max(max_delay, min_delay)
         self._window = window
         self._checker = checker
+        self._shopee_checker = shopee_checker
         self._candidates = candidates  # sem isso o envio automático não faz nada
         self._group_links = group_links
         self._auto_interval = auto_interval
@@ -490,16 +523,17 @@ class SendWorker:
         """Motivo para não mandar (texto), 'retry' se não deu para conferir, ou None."""
         if product is None:
             return "produto removido"
-        if self._checker is None or product.source != "mercadolivre":
+        checker = {"mercadolivre": self._checker, "shopee": self._shopee_checker}.get(product.source)
+        if checker is None:
             return None
         try:
-            price = self._checker.current_price(product)
+            price = checker.current_price(product)
         except Exception as exc:  # nunca manda sem conferir: tenta de novo daqui a pouco
             log.warning("não deu para conferir o preço de %s (%s)", product.id, type(exc).__name__)
             self.state.last_error = f"conferência de preço falhou ({type(exc).__name__})"
             return "retry"
         if price is None:
-            return "o produto não tem mais anúncio novo no ML"
+            return "o produto não está mais na Shopee" if product.source == "shopee" else "o produto não tem mais anúncio novo no ML"
         if price > job.price * PRICE_RISE_TOLERANCE:
             return f"preço subiu de R$ {job.price} para R$ {price}"
         return None

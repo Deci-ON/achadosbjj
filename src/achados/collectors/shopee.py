@@ -135,6 +135,16 @@ class ShopeeClient:
             raise ShopeeAPIError("a Shopee não devolveu o link curto")
         return link
 
+    def product_offer(self, shop_id: int, item_id: int) -> dict | None:
+        """O produto como a API de afiliados o devolve agora (`productOfferV2` filtrado por loja e item), ou None se
+        ele não está mais lá. Argumentos inline pelo mesmo motivo do `conversion_report`."""
+        query = (
+            f"query {{ productOfferV2(shopId: {int(shop_id)}, itemId: {int(item_id)}, limit: 1) "
+            "{ nodes { itemId shopId priceMin priceMax } } }"
+        )
+        nodes = ((self.query(query, {}) or {}).get("productOfferV2") or {}).get("nodes") or []
+        return nodes[0] if nodes else None
+
     def conversion_report(self, start: int, end: int, limit: int = 500, max_pages: int = 20) -> list[dict]:
         """Conversões (pedidos pelos seus links) com compra entre `start` e `end` (unix). Só vale 3 meses para trás.
 

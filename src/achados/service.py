@@ -31,13 +31,14 @@ from achados.frontend import mount_frontend
 from achados.logs import configure_logging
 from achados.coupons import CouponBook, aware, in_brt, is_active, load_book
 from achados.models import Base, CollectRun, Coupon, Product, ProductCoupon, SendJob
-from achados.messages import BRT, coupon_line, format_offer_message
+from achados.messages import BRT, SHOPEE_PRICE_NOTE, coupon_line, format_offer_message
 from achados.offers import assess_product, assess_products
 from achados.scheduler import CollectScheduler, LeaderLock
 from achados.sender import (
     AUTO_RETRY_COOLDOWN,
     SENDER_LOCK_KEY,
     ShopeeGroupLinks,
+    ShopeePriceChecker,
     MlPriceChecker,
     SenderClient,
     SenderError,
@@ -321,6 +322,7 @@ def offer_out(
             sizes=model.offer_sizes() if model else None,
             ad_label=ad_label,
             coupon_lines=[line for c in coupons or [] if (line := coupon_line(c, product.source))],
+            price_note=SHOPEE_PRICE_NOTE if head.source == "shopee" else "",
         ),
         ready=is_ready(head, head_verdict, sent, link=affiliate_url),
         needs_link=needs_link(head, head_verdict, min_link_score, link=affiliate_url),
@@ -456,6 +458,7 @@ def create_app(
             max_delay=settings.sender_max_delay_seconds,
             window=(settings.sender_window_start_hour, settings.sender_window_end_hour),
             checker=checker,
+            shopee_checker=ShopeePriceChecker(shopee_client) if shopee_client else None,
             candidates=auto_candidates,
             group_links=group_links,
             auto_interval=settings.sender_auto_interval_seconds,
