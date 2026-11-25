@@ -35,6 +35,7 @@ function GroupPicker({ selected, onSaved }: { selected: string[]; onSaved: () =>
   const [chosen, setChosen] = useState<Set<string>>(new Set(selected));
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [savedCount, setSavedCount] = useState<number | null>(null); // confirmação visível: sem ela "salvar" parecia não fazer nada
 
   useEffect(() => {
     api
@@ -47,8 +48,10 @@ function GroupPicker({ selected, onSaved }: { selected: string[]; onSaved: () =>
     if (!groups) return;
     setBusy(true);
     setError("");
+    setSavedCount(null);
     try {
-      await api.setSenderGroups(groups.filter((g) => chosen.has(g.id)).map((g) => ({ id: g.id, name: g.name })));
+      const result = await api.setSenderGroups(groups.filter((g) => chosen.has(g.id)).map((g) => ({ id: g.id, name: g.name })));
+      setSavedCount(result.groups);
       onSaved();
     } catch (exc) {
       setError(exc instanceof ApiError ? exc.message : "Não consegui salvar.");
@@ -72,6 +75,7 @@ function GroupPicker({ selected, onSaved }: { selected: string[]; onSaved: () =>
                 type="checkbox"
                 checked={chosen.has(g.id)}
                 onChange={(e) => {
+                  setSavedCount(null);
                   const next = new Set(chosen);
                   if (e.target.checked) next.add(g.id);
                   else next.delete(g.id);
@@ -90,8 +94,13 @@ function GroupPicker({ selected, onSaved }: { selected: string[]; onSaved: () =>
           disabled={busy}
           className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
         >
-          Salvar grupos ({chosen.size})
+          {busy ? "Salvando…" : `Salvar grupos (${chosen.size})`}
         </button>
+      )}
+      {savedCount !== null && !error && (
+        <p className="text-sm text-emerald-700" role="status">
+          ✓ Salvo: {savedCount === 0 ? "nenhum grupo vai receber ofertas" : `${savedCount} grupo${savedCount === 1 ? "" : "s"} ${savedCount === 1 ? "recebe" : "recebem"} as ofertas`}.
+        </p>
       )}
     </section>
   );
