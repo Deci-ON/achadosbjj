@@ -30,6 +30,17 @@ const JOB_STYLE: Record<SenderJob["status"], string> = {
 };
 const JOB_LABEL: Record<SenderJob["status"], string> = { queued: "na fila", sent: "enviada", failed: "falhou", cancelled: "cancelada" };
 
+// Por que a fila não anda, quando a causa é uma regra do próprio robô (e não uma falha): o worker só calcula
+// "próxima a partir de" depois de passar pela janela e pelo limite, então sem isto a fila parecia travada.
+function waitingReason(overview: { queued: number; paused: boolean; sent_today: number; daily_cap: number; window: [number, number] }): string | null {
+  if (overview.queued <= 0 || overview.paused) return null;
+  const [start, end] = overview.window;
+  const hour = Number(new Intl.DateTimeFormat("en-GB", { hour: "2-digit", hourCycle: "h23", timeZone: "America/Sao_Paulo" }).format(new Date()));
+  if (hour < start || hour >= end) return `Fora da janela de envio (${start}h–${end}h, Brasília): a fila sai sozinha a partir das ${start}h.`;
+  if (overview.sent_today >= overview.daily_cap) return `Limite do dia atingido (${overview.sent_today} de ${overview.daily_cap}): o que está na fila sai amanhã, a partir das ${start}h.`;
+  return null;
+}
+
 function GroupPicker({ selected, onSaved }: { selected: string[]; onSaved: () => void }) {
   const [groups, setGroups] = useState<SenderGroup[] | null>(null);
   const [chosen, setChosen] = useState<Set<string>>(new Set(selected));
@@ -317,6 +328,7 @@ export function Sender() {
   }
 
   const { connection } = overview;
+  const waiting = waitingReason(overview);
   return (
     <div className="space-y-4">
       {error && <ErrorBox message={error} />}
@@ -363,6 +375,7 @@ export function Sender() {
           Hoje: <b>{overview.sent_today}</b> de {overview.daily_cap} mensagens · {overview.queued} na fila · janela {overview.window[0]}h–{overview.window[1]}h (Brasília)
           {overview.worker.next_send_at && overview.queued > 0 && <> · próxima a partir de {dateTimeLabel(overview.worker.next_send_at)}</>}
         </p>
+        {waiting && <p className="text-sm text-amber-800">{waiting}</p>}
         {overview.worker.last_error && <p className="text-xs text-slate-500">Último aviso do robô: {overview.worker.last_error}</p>}
       </section>
 
