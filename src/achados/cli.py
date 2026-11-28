@@ -146,15 +146,28 @@ def run_check_ml(api: MercadoLivreAPI | None = None) -> int:
             (
                 "busca no catálogo",
                 "/products/search",
-                {"status": "active", "site_id": "MLB", "q": "kimono jiu jitsu", "limit": 1},
+                {"status": "active", "site_id": "MLB", "q": "kimono jiu jitsu", "limit": 5},
             ),
         ]
+        bodies = []
         for label, path, params in steps:
             body = api.get(path, params)
             if not body:
                 print(f"FALHA  {label}: resposta vazia ou 404")
                 return 1
+            bodies.append(body)
             print(f"ok     {label}")
+        # O que a coleta usa de verdade para os preços: as ofertas de cada produto. Com o app sem a permissão
+        # funcional este é o único passo que dá 403 (token, busca e detalhe passam), e foi o que parou o ML em 2026-11.
+        ids = [p["id"] for p in (bodies[1].get("results") or []) if p.get("id")][:5]
+        if not ids:
+            print("FALHA  ofertas de um produto do catálogo: a busca não trouxe produtos para testar")
+            return 1
+        for product_id in ids:
+            if api.get(f"/products/{product_id}/items") is not None:  # 404 = produto sem ofertas ativas, normal
+                print("ok     ofertas de um produto do catálogo (/products/{id}/items)")
+                return 0
+        print(f"AVISO  ofertas de um produto do catálogo: {len(ids)} produtos testados, todos sem ofertas ativas (404); não deu para confirmar")
         return 0
     except BlockedError as exc:
         print(f"BLOQUEADO  {exc}")

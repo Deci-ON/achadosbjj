@@ -17,7 +17,57 @@ def ok_handler(request: httpx.Request) -> httpx.Response:
 
 def test_check_ml_ok(capsys):
     assert run_check_ml(api_with(ok_handler)) == 0
-    assert capsys.readouterr().out.count("ok ") == 2
+    assert capsys.readouterr().out.count("ok ") == 3  # token+destaques, busca e ofertas do produto
+
+
+POLICY_DENIAL = {
+    "code": "PA_UNAUTHORIZED_RESULT_FROM_POLICIES",
+    "blocked_by": "PolicyAgent",
+    "message": "At least one policy returned UNAUTHORIZED.",
+    "status": 403,
+}
+
+
+def policy_handler(request: httpx.Request) -> httpx.Response:
+    """Token, destaques, busca e detalhe passam; só as ofertas do produto são negadas (o caso de 2026-11-27)."""
+    if request.url.path == "/oauth/token":
+        return httpx.Response(200, json={"access_token": "t", "expires_in": 3600})
+    if request.url.path.endswith("/items"):
+        return httpx.Response(403, json=POLICY_DENIAL)
+    return httpx.Response(200, json={"content": [{"id": "MLB1"}], "results": [{"id": "MLB1"}]})
+
+
+def test_check_ml_app_sem_permissao_funcional_diz_o_que_fazer(capsys):
+    assert run_check_ml(api_with(policy_handler)) == 1
+    out = capsys.readouterr().out
+    assert "BLOQUEADO" in out and "permissão funcional" in out and "Publicação e sincronização" in out
+    assert out.count("ok ") == 2  # os dois primeiros passos passaram: não é o IP nem o token
+
+
+def test_check_ml_produtos_sem_oferta_nao_confirmam_mas_nao_falham(capsys):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/items"):
+            return httpx.Response(404)
+        return ok_handler(request)
+
+    assert run_check_ml(api_with(handler)) == 0
+    assert "AVISO" in capsys.readouterr().out
+
+
+def test_check_ml_acha_oferta_no_segundo_produto(capsys):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/products/search":
+            return httpx.Response(200, json={"results": [{"id": "MLB1"}, {"id": "MLB2"}]})
+        if request.url.path.endswith("/items"):
+            calls.append(request.url.path)
+            return httpx.Response(404 if "MLB1" in request.url.path else 200, json={"results": []})
+        return ok_handler(request)
+
+    assert run_check_ml(api_with(handler)) == 0
+    assert calls == ["/products/MLB1/items", "/products/MLB2/items"]
+    assert "AVISO" not in capsys.readouterr().out
 
 
 def test_check_ml_ip_bloqueado(capsys):

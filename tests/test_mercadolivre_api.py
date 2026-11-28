@@ -16,6 +16,7 @@ from achados.collectors.mercadolivre_api import (
     MercadoLivreAPI,
     MercadoLivreApiCollector,
     MercadoLivreAPIError,
+    MercadoLivrePermissionError,
     best_offer,
 )
 from tests.conftest import FIXTURES
@@ -130,6 +131,23 @@ def test_404_devolve_none_e_403_vira_blocked():
     assert api.get("/a") is None
     with pytest.raises(BlockedError):
         api.get("/sites/MLB/search")
+
+
+def test_403_do_policyagent_vira_erro_de_permissao_com_instrucao():
+    denial = {"code": "PA_UNAUTHORIZED_RESULT_FROM_POLICIES", "blocked_by": "PolicyAgent", "status": 403}
+    api = make_api(
+        lambda r: httpx.Response(200, json={"access_token": "t", "expires_in": 3600})
+        if r.url.path == "/oauth/token"
+        else httpx.Response(403, json=denial if r.url.path.endswith("/items") else {"message": "forbidden"})
+    )
+
+    with pytest.raises(MercadoLivrePermissionError, match="permissão funcional.*Publicação e sincronização") as err:
+        api.get("/products/MLB1/items")
+    assert isinstance(err.value, BlockedError)  # o resto do código (coleta, tendências, vendedor) trata como antes
+    with pytest.raises(BlockedError) as plain:
+        api.get("/sites/MLB/search")  # outro 403 continua sendo o bloqueio de sempre
+    assert not isinstance(plain.value, MercadoLivrePermissionError)
+    assert "403" in str(plain.value)
 
 
 def test_credenciais_recusadas():

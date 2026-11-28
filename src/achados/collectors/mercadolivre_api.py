@@ -97,6 +97,25 @@ class MercadoLivreAPIError(CollectorError):
     pass
 
 
+class MercadoLivrePermissionError(BlockedError):
+    """403 do PolicyAgent: o IP e o token valem, mas o app não tem a permissão funcional daquele recurso.
+
+    É um BlockedError (a coleta para e o resto do código trata igual), mas a mensagem diz o que fazer: "403"
+    sozinho parecia bloqueio de IP, e não é (visto em 2026-11-27 em `/products/{id}/items`, com busca e detalhe
+    do mesmo produto respondendo 200). Resposta documentada pelo ML na página "Permissões funcionais"."""
+
+
+POLICY_DENIAL_CODE = "PA_UNAUTHORIZED_RESULT_FROM_POLICIES"
+
+
+def _is_policy_denial(response: httpx.Response) -> bool:
+    try:
+        body = response.json()
+    except ValueError:
+        return False
+    return isinstance(body, dict) and (body.get("code") == POLICY_DENIAL_CODE or body.get("blocked_by") == "PolicyAgent")
+
+
 class MercadoLivreAPI:
     """Cliente da API oficial do Mercado Livre (fluxo client_credentials).
 
@@ -168,6 +187,11 @@ class MercadoLivreAPI:
             break
         if response.status_code == 404:
             return None
+        if response.status_code == 403 and _is_policy_denial(response):
+            raise MercadoLivrePermissionError(
+                f"falta permissão funcional no app do ML (403 PolicyAgent em {path}): no DevCenter, ative "
+                f"'Publicação e sincronização' (somente leitura) e reinicie o app para pegar um token novo"
+            )
         if response.status_code in (403, 429):
             raise BlockedError(f"Mercado Livre respondeu {response.status_code} em {path}")
         response.raise_for_status()
